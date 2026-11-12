@@ -32,9 +32,9 @@ export const Footer: React.FC<FooterProps> = ({
                 <ShieldAlert className="w-4 h-4" />
               </div>
               <span className="font-arabic-calligraphy text-xl font-black text-[#173829]">
-                دِرْعُ الحَرَارَةِ الذَّكِيّ
+                دِرْعُ الحَرَارَةِ
               </span>
-              <span className="text-xs text-[#557564] font-bold">| HeatShield AI</span>
+              <span className="text-xs text-[#557564] font-bold">| HeatShield</span>
             </div>
             <p className="text-xs text-[#4A6857] leading-relaxed max-w-sm">
               {locale === 'ar'

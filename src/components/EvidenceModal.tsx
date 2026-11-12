@@ -174,7 +174,7 @@ export const EvidenceModal: React.FC<EvidenceModalProps> = ({
                 </div>
 
                 <p className="text-[#4A6857] leading-relaxed">
-                  Flash this sketch to an ESP32 with a DHT22 (temperature & humidity) and black globe sensor on GPIO 4. Connect to site Wi-Fi or run as AP (`192.168.4.1`) to stream real-time JSON to HeatShield AI.
+                  Flash this sketch to an ESP32 with a DHT22 (temperature & humidity) and black globe sensor on GPIO 4. Connect to site Wi-Fi or run as AP (`192.168.4.1`) to stream real-time JSON to HeatShield.
                 </p>
 
                 <div className="relative rounded-xl overflow-hidden border border-[#E8E2D5]">

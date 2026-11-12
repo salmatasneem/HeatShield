@@ -89,6 +89,12 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
                 <span>العربية (دبي)</span>
               </button>
             </div>
+
+            {/* Accessibility Audio & Voice Feature Badge */}
+            <div className="hidden lg:flex items-center space-x-2 rtl:space-x-reverse px-3 py-1.5 rounded-2xl bg-white border border-[#D5E5DC] text-[#173829] text-xs font-bold shadow-2xs">
+              <span className="w-2 h-2 rounded-full bg-[#173829] animate-pulse" />
+              <span>{locale === 'ar' ? '🎙️ قراءة صوتية واستفسار صوتي (عربي / إنجليزي)' : '🎙️ Voice Q&A & Bilingual Audio (EN/AR)'}</span>
+            </div>
           </div>
         </div>
 
@@ -98,10 +104,10 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
           <div className="lg:col-span-7 space-y-4">
             <div className="space-y-1">
               <h1 className="font-arabic-calligraphy text-3xl sm:text-4xl lg:text-5xl font-black text-[#173829] tracking-tight leading-tight">
-                دِرْعُ الحَرَارَةِ الذَّكِيّ
+                دِرْعُ الحَرَارَةِ
               </h1>
               <div className="text-lg sm:text-xl font-extrabold text-[#24533D] font-sans flex items-center space-x-2 rtl:space-x-reverse">
-                <span>HeatShield AI</span>
+                <span>HeatShield</span>
                 <span className="text-sm font-normal text-[#557564]">— Dubai Worker Heat Safety Platform</span>
               </div>
             </div>

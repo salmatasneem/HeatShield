@@ -20,9 +20,10 @@ import { WhyAlertDrawer } from './components/WhyAlertDrawer';
 import { EvidenceModal } from './components/EvidenceModal';
 import { ImpactModal } from './components/ImpactModal';
 import { GuestWelcomeModal } from './components/GuestWelcomeModal';
+import { VoiceQaModal } from './components/VoiceQaModal';
 import { Footer } from './components/Footer';
 import { HeroBanner } from './components/HeroBanner';
-import { WifiOff, HardHat, Bike, Users } from 'lucide-react';
+import { WifiOff, HardHat, Bike, Users, Mic } from 'lucide-react';
 
 export default function App() {
   // Global Interface Locale (English / Dubai Arabic)
@@ -55,6 +56,7 @@ export default function App() {
   const [isWhyAlertOpen, setIsWhyAlertOpen] = useState(false);
   const [isEvidenceOpen, setIsEvidenceOpen] = useState(false);
   const [isImpactOpen, setIsImpactOpen] = useState(false);
+  const [isVoiceQaOpen, setIsVoiceQaOpen] = useState(false);
 
   // Live / Sensor Polling state
   const [isLiveMode, setIsLiveMode] = useState(false);
@@ -464,6 +466,7 @@ export default function App() {
         onOpenDemoControls={() => setIsDemoControlsOpen(true)}
         onOpenEvidence={() => setIsEvidenceOpen(true)}
         onOpenImpact={() => setIsImpactOpen(true)}
+        onOpenVoiceQa={() => setIsVoiceQaOpen(true)}
       />
 
       {/* Sensor Fallback Warning Banner */}
@@ -509,6 +512,7 @@ export default function App() {
             onToggleNewWorker={(v) => setIsNewWorker(v)}
             isAiLoading={isAiLoading}
             locale={locale}
+            onOpenVoiceQa={() => setIsVoiceQaOpen(true)}
           />
         )}
 
@@ -521,6 +525,7 @@ export default function App() {
             onOpenWhyAlert={() => setIsWhyAlertOpen(true)}
             isAiLoading={isAiLoading}
             locale={locale}
+            onOpenVoiceQa={() => setIsVoiceQaOpen(true)}
           />
         )}
 
@@ -535,6 +540,8 @@ export default function App() {
             isPlanLoading={isPlanLoading}
             historyWbgt={historyWbgt}
             locale={locale}
+            advice={advice}
+            onOpenVoiceQa={() => setIsVoiceQaOpen(true)}
           />
         )}
       </main>
@@ -647,6 +654,32 @@ export default function App() {
         locale={locale}
         onSetLocale={handleSetLocale}
       />
+
+      {/* Voice-Based Question and Answer Facility Modal */}
+      <VoiceQaModal
+        isOpen={isVoiceQaOpen}
+        onClose={() => setIsVoiceQaOpen(false)}
+        evaluation={currentEvaluation}
+        role={currentRole}
+        locale={locale}
+      />
+
+      {/* Persistent Accessible Voice Assistant Floating Button */}
+      <button
+        onClick={() => setIsVoiceQaOpen(true)}
+        aria-label={locale === 'ar' ? 'المساعد الصوتي للسلامة' : 'Voice Safety Q&A Assistant'}
+        title={locale === 'ar' ? 'المساعد الصوتي للسلامة - تحدث بصوتك واستمع للإجابة' : 'Voice Safety Q&A - Speak and listen in English & Arabic'}
+        className="fixed bottom-20 md:bottom-8 right-5 rtl:right-auto rtl:left-5 z-40 bg-[#173829] hover:bg-[#24533D] text-[#FAF8F3] px-3.5 py-3 sm:px-4 sm:py-3.5 rounded-2xl shadow-xl flex items-center space-x-2.5 rtl:space-x-reverse font-bold text-xs sm:text-sm border-2 border-[#FAF8F3] transition-all hover:scale-105 active:scale-95 group"
+      >
+        <span className="relative flex h-3 w-3">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#A3E5C1] opacity-75"></span>
+          <span className="relative inline-flex rounded-full h-3 w-3 bg-[#A3E5C1]"></span>
+        </span>
+        <Mic className="w-5 h-5 text-[#A3E5C1] group-hover:animate-pulse" />
+        <span className="hidden sm:inline">
+          {locale === 'ar' ? 'المساعد الصوتي • اسأل صوتياً' : 'Voice Q&A • Ask with Voice'}
+        </span>
+      </button>
 
       {/* Statutory Footer with non-medical disclaimer */}
       <Footer

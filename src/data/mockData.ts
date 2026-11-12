@@ -105,7 +105,7 @@ export const DEMO_CREWS: CrewInfo[] = [
 ];
 
 /**
- * Scientific literature citations and evidence backing HeatShield AI.
+ * Scientific literature citations and evidence backing HeatShield.
  */
 export const EVIDENCE_CITATIONS = [
   {
@@ -158,7 +158,7 @@ export const EVIDENCE_CITATIONS = [
 /**
  * ESP32 Arduino C++ Code snippet as documented in Section 6 of the build guide.
  */
-export const ESP32_ARDUINO_SKETCH = `// HeatShield AI - ESP32 Site Node Firmware
+export const ESP32_ARDUINO_SKETCH = `// HeatShield - ESP32 Site Node Firmware
 // Wiring:
 // DHT22 Data -> GPIO 4 (3.3V and GND)
 // DS18B20 Data -> GPIO 5 (4.7kΩ pull-up resistor to 3.3V)

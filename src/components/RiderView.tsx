@@ -23,6 +23,7 @@ import {
   Wind,
 } from 'lucide-react';
 import { AppLocale, UI_TRANSLATIONS } from '../utils/i18n';
+import { BilingualResultsAudioCard } from './BilingualResultsAudioCard';
 
 interface RiderViewProps {
   evaluation: RiskEvaluation;
@@ -32,6 +33,7 @@ interface RiderViewProps {
   onOpenWhyAlert: () => void;
   isAiLoading: boolean;
   locale?: AppLocale;
+  onOpenVoiceQa: () => void;
 }
 
 // Arabic names for Dubai cooling stations
@@ -70,6 +72,7 @@ export const RiderView: React.FC<RiderViewProps> = ({
   onOpenWhyAlert,
   isAiLoading,
   locale = 'en',
+  onOpenVoiceQa,
 }) => {
   const t = UI_TRANSLATIONS[locale];
 
@@ -146,7 +149,15 @@ export const RiderView: React.FC<RiderViewProps> = ({
       {/* 1. Primary Risk Card */}
       <RiskCard evaluation={evaluation} onOpenWhyAlert={onOpenWhyAlert} locale={locale} />
 
-      {/* 2. Multilingual Alert advisory with voice read-out */}
+      {/* 2. Accessible Bilingual Results Read & Audio Player */}
+      <BilingualResultsAudioCard
+        evaluation={evaluation}
+        advice={advice}
+        locale={locale}
+        onOpenVoiceQa={onOpenVoiceQa}
+      />
+
+      {/* 3. Multilingual Alert advisory with voice read-out */}
       <MultilingualAlert
         advice={advice}
         currentLang={currentLang}

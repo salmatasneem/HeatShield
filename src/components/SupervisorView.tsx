@@ -3,6 +3,7 @@ import {
   RiskEvaluation,
   SmartShiftPlan,
   AlertFeedbackState,
+  GeminiHeatAdvice,
 } from '../types';
 import { DEMO_CREWS } from '../data/mockData';
 import { evaluateHeatRisk } from '../utils/riskEngine';
@@ -19,9 +20,11 @@ import {
   CheckCircle,
   ThermometerSnowflake,
   AlertTriangle,
+  Mic,
 } from 'lucide-react';
 import { AppLocale, UI_TRANSLATIONS } from '../utils/i18n';
 import { DubaiHeatmap } from './DubaiHeatmap';
+import { BilingualResultsAudioCard } from './BilingualResultsAudioCard';
 
 interface SupervisorViewProps {
   evaluation: RiskEvaluation;
@@ -33,6 +36,8 @@ interface SupervisorViewProps {
   isPlanLoading: boolean;
   historyWbgt: Array<{ time: string; wbgt: number }>;
   locale?: AppLocale;
+  advice?: GeminiHeatAdvice;
+  onOpenVoiceQa?: () => void;
 }
 
 const ARABIC_CREW_INFO: Record<string, { name: string; task: string; zone: string }> = {
@@ -63,6 +68,8 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({
   isPlanLoading,
   historyWbgt,
   locale = 'en',
+  advice,
+  onOpenVoiceQa,
 }) => {
   const t = UI_TRANSLATIONS[locale];
   const [showWearableData, setShowWearableData] = useState(false);
@@ -197,6 +204,16 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* Accessible Bilingual Results Read & Audio Player for Supervisors */}
+      {advice && (
+        <BilingualResultsAudioCard
+          evaluation={evaluation}
+          advice={advice}
+          locale={locale}
+          onOpenVoiceQa={onOpenVoiceQa || (() => {})}
+        />
+      )}
 
       {/* 2. Dubai District Heat Zones Heatmap (Interactive Geospatial Planning) */}
       <DubaiHeatmap locale={locale} />

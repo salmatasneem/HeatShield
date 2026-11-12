@@ -148,3 +148,25 @@ export interface DubaiDistrictHeatZone {
   nearestCoolingHub: string;
   coolingHubAr: string;
 }
+
+export interface VoiceQaMessage {
+  id: string;
+  sender: 'user' | 'assistant';
+  timestamp: string;
+  question?: string;
+  answer_en?: string;
+  answer_ar?: string;
+  key_advice?: string[];
+  safety_tip?: string;
+  urgency?: 'normal' | 'urgent' | 'emergency';
+  language: 'en' | 'ar';
+}
+
+export interface VoiceQaResponse {
+  answer_en: string;
+  answer_ar: string;
+  key_advice: string[];
+  safety_tip: string;
+  urgency: 'normal' | 'urgent' | 'emergency';
+  source?: 'gemini' | 'fallback' | 'fallback_no_key' | 'resilient_fallback' | 'fallback_error';
+}

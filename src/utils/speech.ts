@@ -37,23 +37,40 @@ export function playAlertChime(urgency: 'low' | 'moderate' | 'high' | 'critical'
   }
 }
 
+let currentActiveAudio: HTMLAudioElement | null = null;
+
 /**
- * Speaks the text aloud using browser SpeechSynthesis API.
+ * Stops all currently active speech or audio playback.
+ */
+export function stopAllSpeech() {
+  if (currentActiveAudio) {
+    currentActiveAudio.pause();
+    currentActiveAudio.currentTime = 0;
+    currentActiveAudio = null;
+  }
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+  }
+}
+
+/**
+ * Speaks the text aloud using browser SpeechSynthesis API with configurable rate.
  */
 export function speakAlertText(
   text: string,
   lang: SupportedLanguage,
   onStart?: () => void,
-  onEnd?: () => void
+  onEnd?: () => void,
+  rate: number = 0.95
 ): boolean {
+  stopAllSpeech();
+
   if (!('speechSynthesis' in window)) {
     playAlertChime('high');
     return false;
   }
 
   try {
-    window.speechSynthesis.cancel(); // Stop any pending speech
-
     const utterance = new SpeechSynthesisUtterance(text);
     const targetCodes = LANG_CODE_MAP[lang] || ['en-US'];
 
@@ -70,7 +87,7 @@ export function speakAlertText(
       utterance.lang = targetCodes[0];
     }
 
-    utterance.rate = 0.95; // Slightly slower for clarity under noisy outdoor conditions
+    utterance.rate = rate; // Slightly slower for clarity under noisy outdoor conditions
     utterance.pitch = 1.0;
 
     utterance.onstart = () => {
@@ -82,7 +99,6 @@ export function speakAlertText(
     };
 
     utterance.onerror = () => {
-      playAlertChime('high');
       onEnd?.();
     };
 
@@ -94,3 +110,141 @@ export function speakAlertText(
     return false;
   }
 }
+
+/**
+ * Plays speech using Gemini TTS if available, or seamlessly falls back to client SpeechSynthesis.
+ */
+export async function playTtsOrFallback(
+  text: string,
+  lang: 'en' | 'ar',
+  onStart?: () => void,
+  onEnd?: () => void,
+  rate: number = 1.0
+): Promise<void> {
+  stopAllSpeech();
+
+  try {
+    const res = await fetch('/api/gemini/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, language: lang }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data.audioBase64) {
+        const audio = new Audio(`data:audio/wav;base64,${data.audioBase64}`);
+        currentActiveAudio = audio;
+        audio.playbackRate = rate;
+
+        audio.onplay = () => onStart?.();
+        audio.onended = () => {
+          currentActiveAudio = null;
+          onEnd?.();
+        };
+        audio.onerror = () => {
+          // Fall back to SpeechSynthesis
+          currentActiveAudio = null;
+          speakAlertText(text, lang, onStart, onEnd, rate);
+        };
+
+        await audio.play();
+        return;
+      }
+    }
+  } catch (e) {
+    // network or api error, proceed to fallback
+  }
+
+  // Fallback to client browser speech synthesis
+  speakAlertText(text, lang, onStart, onEnd, rate);
+}
+
+/**
+ * Checks if Web Speech Recognition is supported in the browser.
+ */
+export function isSpeechRecognitionSupported(): boolean {
+  if (typeof window === 'undefined') return false;
+  return Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+}
+
+export interface SpeechRecognizerHandle {
+  start: () => void;
+  stop: () => void;
+}
+
+/**
+ * Creates a Speech Recognition instance for English or Arabic voice capture.
+ */
+export function createSpeechRecognizer(
+  lang: 'en' | 'ar',
+  onInterim: (text: string) => void,
+  onFinal: (text: string) => void,
+  onError: (err: string) => void,
+  onEnd: () => void
+): SpeechRecognizerHandle | null {
+  const SpeechRecognition =
+    (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+  if (!SpeechRecognition) {
+    return null;
+  }
+
+  try {
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+    recognition.lang = lang === 'ar' ? 'ar-AE' : 'en-US';
+
+    recognition.onresult = (event: any) => {
+      let interimTranscript = '';
+      let finalTranscript = '';
+
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        const chunk = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += chunk;
+        } else {
+          interimTranscript += chunk;
+        }
+      }
+
+      if (interimTranscript) {
+        onInterim(interimTranscript);
+      }
+      if (finalTranscript) {
+        onFinal(finalTranscript);
+      }
+    };
+
+    recognition.onerror = (event: any) => {
+      console.warn('Speech recognition error:', event.error);
+      onError(event.error || 'Speech recognition failed');
+    };
+
+    recognition.onend = () => {
+      onEnd();
+    };
+
+    return {
+      start: () => {
+        try {
+          recognition.start();
+        } catch (e) {
+          console.warn('Recognition already started or error:', e);
+        }
+      },
+      stop: () => {
+        try {
+          recognition.stop();
+        } catch (e) {
+          // ignore
+        }
+      },
+    };
+  } catch (err) {
+    return null;
+  }
+}
+

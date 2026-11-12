@@ -9,6 +9,7 @@ import {
   TrendingUp,
   Radio,
   Clock,
+  Mic,
 } from 'lucide-react';
 import { Role } from '../types';
 import { AppLocale, UI_TRANSLATIONS } from '../utils/i18n';
@@ -23,6 +24,7 @@ interface HeaderProps {
   onOpenDemoControls: () => void;
   onOpenEvidence: () => void;
   onOpenImpact: () => void;
+  onOpenVoiceQa?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -35,6 +37,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenDemoControls,
   onOpenEvidence,
   onOpenImpact,
+  onOpenVoiceQa,
 }) => {
   const t = UI_TRANSLATIONS[locale];
 
@@ -53,10 +56,10 @@ export const Header: React.FC<HeaderProps> = ({
             <div>
               <div className="flex items-baseline flex-wrap gap-x-2 gap-y-0.5">
                 <span className="font-arabic-calligraphy text-xl sm:text-2xl font-black text-[#173829] tracking-tight">
-                  دِرْعُ الحَرَارَةِ الذَّكِيّ
+                  دِرْعُ الحَرَارَةِ
                 </span>
                 <span className="text-[#557564] text-xs font-semibold font-sans tracking-wide">
-                  HeatShield AI
+                  HeatShield
                 </span>
               </div>
               <p className="text-[11px] text-[#4A6857] hidden md:block font-medium">
@@ -183,6 +186,16 @@ export const Header: React.FC<HeaderProps> = ({
             >
               <BookOpen className="w-4 h-4 text-[#173829]" />
               <span>{t.nav.evidence}</span>
+            </button>
+
+            {/* Voice Q&A Assistant Button */}
+            <button
+              onClick={onOpenVoiceQa}
+              title={locale === 'ar' ? 'المساعد الصوتي الذكي' : 'Voice Safety Q&A Assistant'}
+              className="flex items-center space-x-1.5 rtl:space-x-reverse px-3 py-2 rounded-2xl bg-[#EBF5F0] hover:bg-[#D5E5DC] text-[#173829] border border-[#B8DFC8] font-bold text-xs transition-colors shadow-xs"
+            >
+              <Mic className="w-3.5 h-3.5 text-[#173829]" />
+              <span className="hidden sm:inline">{locale === 'ar' ? 'اسأل صوتياً' : 'Voice Q&A'}</span>
             </button>
 
             {/* Demo Controls Button */}

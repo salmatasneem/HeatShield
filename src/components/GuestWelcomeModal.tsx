@@ -90,10 +90,10 @@ export const GuestWelcomeModal: React.FC<GuestWelcomeModalProps> = ({
 
           <div>
             <h1 className="font-arabic-calligraphy text-2xl sm:text-3xl font-black text-[#173829] tracking-tight leading-snug">
-              دِرْعُ الحَرَارَةِ الذَّكِيّ
+              دِرْعُ الحَرَارَةِ
             </h1>
             <div className="text-sm font-bold text-[#24533D]">
-              HeatShield AI • {t.guestModal.badge}
+              HeatShield • {t.guestModal.badge}
             </div>
             <p className="text-xs text-[#4A6857] mt-1 leading-relaxed">
               {t.guestModal.subtext}

@@ -18,6 +18,7 @@ import {
   Activity,
 } from 'lucide-react';
 import { AppLocale, UI_TRANSLATIONS } from '../utils/i18n';
+import { BilingualResultsAudioCard } from './BilingualResultsAudioCard';
 
 interface WorkerViewProps {
   evaluation: RiskEvaluation;
@@ -31,6 +32,7 @@ interface WorkerViewProps {
   onToggleNewWorker: (val: boolean) => void;
   isAiLoading: boolean;
   locale?: AppLocale;
+  onOpenVoiceQa: () => void;
 }
 
 export const WorkerView: React.FC<WorkerViewProps> = ({
@@ -45,6 +47,7 @@ export const WorkerView: React.FC<WorkerViewProps> = ({
   onToggleNewWorker,
   isAiLoading,
   locale = 'en',
+  onOpenVoiceQa,
 }) => {
   const t = UI_TRANSLATIONS[locale];
 
@@ -100,7 +103,15 @@ export const WorkerView: React.FC<WorkerViewProps> = ({
       {/* 1. Primary Risk Card */}
       <RiskCard evaluation={evaluation} onOpenWhyAlert={onOpenWhyAlert} locale={locale} />
 
-      {/* 2. Multilingual Alert advisory with voice read-out */}
+      {/* 2. Accessible Bilingual Results Read & Audio Player */}
+      <BilingualResultsAudioCard
+        evaluation={evaluation}
+        advice={advice}
+        locale={locale}
+        onOpenVoiceQa={onOpenVoiceQa}
+      />
+
+      {/* 3. Multilingual Alert advisory with voice read-out */}
       <MultilingualAlert
         advice={advice}
         currentLang={currentLang}
@@ -459,8 +470,8 @@ export const WorkerView: React.FC<WorkerViewProps> = ({
 
             <p className="text-xs text-[#426050] leading-relaxed">
               {locale === 'ar'
-                ? 'يلتزم نظام درع الحرارة الذكي بأعلى معايير حماية البيانات الشخصية المعتمدة في دولة الإمارات العربية المتحدة (قانون البيانات الاتحادي). جميع قياسات المستشعرات وسجلات الإرهاق مجهولة المصدر وتخزن محلياً.'
-                : 'HeatShield AI complies with UAE Federal Data Protection regulations. All physiological strain telemetry and symptom disclosures are anonymized on-device and cannot be used for punitive employment metrics.'}
+                ? 'يلتزم نظام درع الحرارة بأعلى معايير حماية البيانات الشخصية المعتمدة في دولة الإمارات العربية المتحدة (قانون البيانات الاتحادي). جميع قياسات المستشعرات وسجلات الإرهاق مجهولة المصدر وتخزن محلياً.'
+                : 'HeatShield complies with UAE Federal Data Protection regulations. All physiological strain telemetry and symptom disclosures are anonymized on-device and cannot be used for punitive employment metrics.'}
             </p>
 
             <div className="p-3 bg-[#f7f5ee] rounded-xl border border-[#e2dcd0] space-y-1.5 text-xs">

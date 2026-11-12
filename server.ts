@@ -127,7 +127,7 @@ app.post('/api/gemini/heat-advice', async (req: Request, res: Response) => {
 
   try {
     const prompt = `
-You are the heat-health reasoning engine for "HeatShield AI" in Dubai, UAE.
+You are the heat-health reasoning engine for "HeatShield" in Dubai, UAE.
 Inputs:
 - Air Temp: ${airTemp}°C, Humidity: ${humidity}%, Solar Globe: ${globeTemp}°C
 - WBGT: ${wbgt?.toFixed?.(1) || wbgt}°C, Workload: ${workload}, PPE: ${ppe ? 'Yes' : 'No'}
@@ -294,6 +294,230 @@ Generate JSON with:
   }
 });
 
+// 2b. Voice-Based Question and Answer Facility (English & Arabic)
+app.post('/api/gemini/voice-qa', async (req: Request, res: Response) => {
+  const { question, preferredLanguage = 'en', context = {} } = req.body;
+
+  if (!question || typeof question !== 'string') {
+    return res.status(400).json({ error: 'Question is required' });
+  }
+
+  const {
+    airTemp = 38.4,
+    humidity = 52,
+    globeTemp = 45.4,
+    wbgt = 32.5,
+    riskLevel = 'High',
+    role = 'worker',
+    isMiddayBanActive = false,
+    workload = 'Moderate',
+    symptoms = [],
+  } = context;
+
+  // Build heuristic fallback answer in case Gemini is offline or rate limited
+  const qLower = question.toLowerCase();
+  const isArabicQuery = /[\u0600-\u06FF]/.test(question);
+  const targetLang = preferredLanguage === 'ar' || isArabicQuery ? 'ar' : 'en';
+
+  let fallbackAnswer = {
+    answer_en: `Current WBGT in Dubai is ${Number(wbgt).toFixed(1)}°C with ${riskLevel} risk level. Air temperature is ${airTemp}°C with ${humidity}% humidity. Please drink 250ml cold water every 15 minutes, rest in shade, and comply with safety rules.`,
+    answer_ar: `مؤشر الحرارة الرطبة الكروية (WBGT) الحالي في دبي هو ${Number(wbgt).toFixed(1)} درجة مئوية، ومستوى الخطر ${riskLevel === 'Critical' ? 'حرج جداً' : riskLevel === 'High' ? 'مرتفع' : 'معتدل'}. احرص على شرب 250 مل ماء بارد كل 15 دقيقة والراحة في الظل.`,
+    key_advice: [
+      'Drink 250ml of cold water or electrolytes every 15-20 minutes.',
+      'Take scheduled rest breaks in shaded or air-conditioned rest stations.',
+      'Report any dizziness, nausea, or heavy fatigue immediately to your supervisor.',
+    ],
+    safety_tip: 'Do not wait until you feel thirsty to drink water. Keep your neck and head covered.',
+    urgency: 'normal' as 'normal' | 'urgent' | 'emergency',
+    source: 'fallback',
+  };
+
+  if (qLower.includes('midday') || qLower.includes('ban') || question.includes('حظر') || question.includes('ظهيرة')) {
+    fallbackAnswer = {
+      answer_en: 'Under UAE MoHRE decree, all outdoor work under direct sunlight is strictly prohibited between 12:30 PM and 3:00 PM during the summer months. Employers must provide cooled rest areas.',
+      answer_ar: 'وفقاً لقرارات وزارة الموارد البشرية والتوطين في دولة الإمارات، يُحظر العمل في الأماكن المكشوفة وتحت أشعة الشمس من الساعة 12:30 ظهراً وحتى 3:00 عصراً، مع توفير استراحات مكيفة للعمال.',
+      key_advice: [
+        'Mandatory halt of outdoor open sun work from 12:30 to 15:00.',
+        'Use designated air-conditioned rest stations across Dubai.',
+        'Violations carry strict regulatory penalties for site operators.',
+      ],
+      safety_tip: 'All crews must move to air-conditioned rest areas during the ban hours.',
+      urgency: 'urgent',
+      source: 'fallback',
+    };
+  } else if (
+    qLower.includes('dizzy') ||
+    qLower.includes('headache') ||
+    qLower.includes('nausea') ||
+    qLower.includes('cramp') ||
+    qLower.includes('vomit') ||
+    question.includes('دوخة') ||
+    question.includes('صداع') ||
+    question.includes('غثيان') ||
+    question.includes('تعب')
+  ) {
+    fallbackAnswer = {
+      answer_en: 'These are early warning symptoms of heat exhaustion or heat stroke! Stop physical work immediately, move into an air-conditioned room, loosen PPE, drink cool water, and apply cold towels.',
+      answer_ar: 'هذه مؤشرات خطيرة للإجهاد الحراري أو ضربة الشمس! أوقف العمل الميداني فوراً، توجه إلى غرفة مكيفة، خفف ملابس ومعدات الوقاية، اشرب ماء بارداً، وأبلغ المشرف فوراً.',
+      key_advice: [
+        'Immediate work stoppage and evacuation to an air-conditioned room.',
+        'Apply cold wet cloths to neck, armpits, and groin.',
+        'If confusion or fainting occurs, call 998 for Dubai Emergency Medical Services.',
+      ],
+      safety_tip: 'Never ignore dizziness or nausea in extreme heat—cooling must begin in under 5 minutes.',
+      urgency: 'emergency',
+      source: 'fallback',
+    };
+  } else if (qLower.includes('water') || qLower.includes('drink') || question.includes('ماء') || question.includes('شرب')) {
+    fallbackAnswer = {
+      answer_en: 'In current Dubai thermal conditions, drink at least 250ml of cool water or electrolyte-rich fluids every 15 to 20 minutes, even if you are not thirsty. Avoid sugary sodas or energy drinks.',
+      answer_ar: 'في الأجواء الحارة الحالية في دبي، اشرب ما لا يقل عن 250 مل من الماء البارد أو المشروبات الغنية بالأملاح كل 15 إلى 20 دقيقة، حتى دون الشعور بالعطش. تجنب المشروبات الغازية السكرية.',
+      key_advice: [
+        'Drink 250ml every 15-20 minutes.',
+        'Include electrolytes or oral rehydration salts in high humidity.',
+        'Keep water shaded and below 15°C for maximum palatability.',
+      ],
+      safety_tip: 'Dark urine indicates dehydration. Check your hydration status regularly.',
+      urgency: 'normal',
+      source: 'fallback',
+    };
+  } else if (
+    qLower.includes('station') ||
+    qLower.includes('rider') ||
+    qLower.includes('rest') ||
+    question.includes('محطة') ||
+    question.includes('سائق') ||
+    question.includes('استراحة')
+  ) {
+    fallbackAnswer = {
+      answer_en: 'Dubai Municipality and MoHRE provide hundreds of air-conditioned rest hubs with cold drinking water for delivery riders in Downtown, Business Bay, Al Barsha, Deira, and Dubai Marina.',
+      answer_ar: 'توفر بلدية دبي ووزارة الموارد البشرية والتوطين مئات محطات الاستراحة المكيفة والمزودة بماء بارد وشواحن لسائقي التوصيل في وسط المدينة، الخليج التجاري، البرشاء، ديرة، ودبي مارينا.',
+      key_advice: [
+        'Rest hubs are available at key Dubai districts with free cold water.',
+        'Stop and cool down for 15 minutes between long delivery runs.',
+        'Use the Rider View cooling map to find the nearest certified station.',
+      ],
+      safety_tip: 'Cool your motorcycle helmet and drink water before taking the next delivery.',
+      urgency: 'normal',
+      source: 'fallback',
+    };
+  }
+
+  if (!aiClient) {
+    return res.json({ ...fallbackAnswer, source: 'fallback_no_key' });
+  }
+
+  try {
+    const prompt = `
+You are the bilingual Voice Q&A Safety Assistant for "HeatShield", an occupational heat-health system for outdoor workers and delivery riders in Dubai, UAE.
+
+CURRENT CONDITIONS & CONTEXT:
+- Role of user: ${role}
+- Air Temperature: ${airTemp}°C, Humidity: ${humidity}%, Solar Globe: ${globeTemp}°C
+- Calculated WBGT: ${wbgt}°C, Risk Level: ${riskLevel}
+- Workload: ${workload}, Midday Ban Active: ${isMiddayBanActive ? 'YES (12:30-15:00 legal stop)' : 'NO'}
+- Reported symptoms: ${symptoms.length > 0 ? symptoms.join(', ') : 'None reported'}
+
+USER QUESTION: "${question}"
+USER PREFERRED LANGUAGE: ${targetLang}
+
+REQUIREMENTS:
+1. Provide a spoken-friendly, conversational, direct response designed to be LISTENED TO aloud through speech synthesis. Keep sentences clear, crisp, and under 50 words per language.
+2. Provide answers in BOTH English (answer_en) AND authentic Dubai Arabic (answer_ar). Use standard Arabic (فصحى مبسطة وواضحة جداً) suitable for construction workers and delivery riders in the UAE.
+3. If the user mentions symptoms (dizziness, nausea, vomiting, fainting, cramps), prioritize emergency first-aid protocols (stop work, cool shelter, hydrate, alert supervisor, call 998).
+4. Strictly align with UAE Ministry of Human Resources and Emiratisation (MoHRE) regulations and ISO 7243 standards.
+5. Return JSON matching the schema.
+`;
+
+    const responseText = await generateContentResilient({
+      contents: prompt,
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          answer_en: { type: Type.STRING },
+          answer_ar: { type: Type.STRING },
+          key_advice: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+          safety_tip: { type: Type.STRING },
+          urgency: {
+            type: Type.STRING,
+            enum: ['normal', 'urgent', 'emergency'],
+          },
+        },
+        required: ['answer_en', 'answer_ar', 'key_advice', 'safety_tip', 'urgency'],
+      },
+    });
+
+    if (!responseText) {
+      return res.json({ ...fallbackAnswer, source: 'resilient_fallback' });
+    }
+
+    const parsed = JSON.parse(responseText);
+    return res.json({ ...parsed, source: 'gemini' });
+  } catch (err: any) {
+    return res.json({ ...fallbackAnswer, source: 'fallback_error' });
+  }
+});
+
+// 2c. Server-Side High Quality Text-to-Speech (TTS) Endpoint
+app.post('/api/gemini/tts', async (req: Request, res: Response) => {
+  const { text, language = 'en' } = req.body;
+
+  if (!text || typeof text !== 'string') {
+    return res.status(400).json({ error: 'Text is required for TTS synthesis' });
+  }
+
+  if (!aiClient) {
+    return res.json({ fallback: true, message: 'Gemini client not initialized; use client-side speech synthesis' });
+  }
+
+  try {
+    const voiceName = language === 'ar' ? 'Kore' : 'Puck';
+    const truncatedText = text.slice(0, 450); // Keep within fast real-time TTS window
+
+    const response = await aiClient.models.generateContent({
+      model: 'gemini-3.8-flash-lite-tts',
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              text: truncatedText,
+              speechMetadata: {
+                style: language === 'ar' ? 'Clear, protective voice in authentic Arabic' : 'Clear, friendly occupational safety voice',
+              },
+            },
+          ],
+        },
+      ],
+      config: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName },
+          },
+        },
+      },
+    });
+
+    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (base64Audio) {
+      return res.json({
+        audioBase64: base64Audio,
+        mimeType: 'audio/wav',
+        source: 'gemini-3.8-flash-lite-tts',
+      });
+    }
+
+    return res.json({ fallback: true });
+  } catch (err: any) {
+    console.log('Gemini TTS fallback note:', err?.message?.slice?.(0, 80));
+    return res.json({ fallback: true, error: err.message });
+  }
+});
+
 // 3. Sensor URL Proxy endpoint (solves CORS when ESP32 writes to Firebase Realtime DB or custom REST endpoint)
 app.get('/api/sensor-proxy', async (req: Request, res: Response) => {
   const url = req.query.url as string;
@@ -371,7 +595,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`HeatShield AI server running on http://0.0.0.0:${PORT} (${isProd ? 'production' : 'development'})`);
+    console.log(`HeatShield server running on http://0.0.0.0:${PORT} (${isProd ? 'production' : 'development'})`);
   });
 }
 

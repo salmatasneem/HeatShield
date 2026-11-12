@@ -138,6 +138,43 @@ export interface TranslationDictionary {
     continueBtn: string;
     roleNotice: string;
   };
+  voiceQa: {
+    title: string;
+    subtitle: string;
+    askQuestion: string;
+    listening: string;
+    tapToSpeak: string;
+    listeningSubtitle: string;
+    typeQuestionPlaceholder: string;
+    send: string;
+    presetTitle: string;
+    listenEn: string;
+    listenAr: string;
+    stopSpeech: string;
+    speed: string;
+    readingEn: string;
+    readingAr: string;
+    emergencyBanner: string;
+    sourceGemini: string;
+    sourceFallback: string;
+    micNotSupported: string;
+  };
+  resultsAudio: {
+    title: string;
+    subtitle: string;
+    readEn: string;
+    readAr: string;
+    listenEn: string;
+    listenAr: string;
+    stop: string;
+    playingAudio: string;
+    playbackSpeed: string;
+    currentWbgt: string;
+    riskStatus: string;
+    actionRequired: string;
+    hydrationPlan: string;
+    middayBanStatus: string;
+  };
   footer: {
     disclaimerTitle: string;
     disclaimerText: string;
@@ -146,8 +183,8 @@ export interface TranslationDictionary {
 
 export const UI_TRANSLATIONS: Record<AppLocale, TranslationDictionary> = {
   en: {
-    appName: 'HeatShield AI',
-    appArabicName: 'دِرْعُ الحَرَارَةِ الذَّكِيّ',
+    appName: 'HeatShield',
+    appArabicName: 'دِرْعُ الحَرَارَةِ',
     tagline: 'Heat-risk early warning & SmartShift system for Dubai outdoor workers',
     subtitle: 'Decision support system for outdoor construction crews & delivery riders in Dubai & the UAE',
     roles: {
@@ -283,14 +320,51 @@ export const UI_TRANSLATIONS: Record<AppLocale, TranslationDictionary> = {
       continueBtn: 'Continue as Guest',
       roleNotice: 'Role switcher remains accessible in the top navigation bar at all times.',
     },
+    voiceQa: {
+      title: 'Voice Safety Q&A Assistant',
+      subtitle: 'Hands-free voice questions & answers for workers, delivery riders, and supervisors',
+      askQuestion: 'Ask a Question with Voice or Text',
+      listening: 'Listening... Speak now in English or Arabic',
+      tapToSpeak: 'Tap to Speak',
+      listeningSubtitle: 'Speak naturally into your device microphone...',
+      typeQuestionPlaceholder: 'Or type your heat safety question here...',
+      send: 'Ask Assistant',
+      presetTitle: 'Quick Accessible Questions:',
+      listenEn: 'Listen in English',
+      listenAr: 'استمع بالعربية',
+      stopSpeech: 'Stop Audio',
+      speed: 'Speed',
+      readingEn: 'English Response',
+      readingAr: 'الإجابة باللغة العربية',
+      emergencyBanner: 'Emergency Protocol: Immediate rest in air-conditioned zone and cold fluids recommended.',
+      sourceGemini: 'Answered by Gemini Reasoning',
+      sourceFallback: 'Answered by HeatShield Safety Rules',
+      micNotSupported: 'Microphone speech recognition is not supported in this browser; please use typed question or quick buttons below.',
+    },
+    resultsAudio: {
+      title: 'Read & Hear Thermal Results (English & Arabic)',
+      subtitle: 'Accessible bilingual audio readout & visual display of current heat risk evaluation',
+      readEn: 'Read in English',
+      readAr: 'اقرأ بالعربية',
+      listenEn: '🔊 Listen in English',
+      listenAr: '🔊 استمع بالعربية',
+      stop: 'Stop Audio',
+      playingAudio: 'Playing audio...',
+      playbackSpeed: 'Speed',
+      currentWbgt: 'Calculated WBGT',
+      riskStatus: 'Risk Status',
+      actionRequired: 'Required Safety Action',
+      hydrationPlan: 'Hydration Target',
+      middayBanStatus: 'UAE Midday Ban',
+    },
     footer: {
       disclaimerTitle: 'Important Decision-Support & Non-Medical Device Notice',
-      disclaimerText: 'HeatShield AI (درع الحرارة الذكي) is an operational decision-support tool, NOT a certified medical device. It does not diagnose, predict heat stroke, or replace professional clinical judgment. Thresholds displayed are based on ISO 7243 and UAE MoHRE guidelines.',
+      disclaimerText: 'HeatShield (درع الحرارة) is an operational decision-support tool, NOT a certified medical device. It does not diagnose, predict heat stroke, or replace professional clinical judgment. Thresholds displayed are based on ISO 7243 and UAE MoHRE guidelines.',
     },
   },
   ar: {
-    appName: 'درع الحرارة الذكي',
-    appArabicName: 'HeatShield AI',
+    appName: 'درع الحرارة',
+    appArabicName: 'HeatShield',
     tagline: 'منظومة حماية عمال الميدان وسائقي التوصيل من الإجهاد الحراري والتخطيط الذكي للمناوبات',
     subtitle: 'نظام دعم القرار لحماية العمال الميدانيين وسائقي التوصيل في إمارة دبي ودولة الإمارات العربية المتحدة',
     roles: {
@@ -426,9 +500,46 @@ export const UI_TRANSLATIONS: Record<AppLocale, TranslationDictionary> = {
       continueBtn: 'المتابعة كزائر',
       roleNotice: 'يمكنك التبديل بين واجهات العمال والمشرفين في أي وقت من الشريط العلوي.',
     },
+    voiceQa: {
+      title: 'المساعد الصوتي الذكي للسلامة الحرارية',
+      subtitle: 'اطرح استفساراتك بصوتك واستمع للإجابة الفورية باللغتين العربية والإنجليزية',
+      askQuestion: 'اطرح سؤالاً صوتياً أو كتابياً',
+      listening: 'جاري الاستماع... تحدث الآن باللغة العربية أو الإنجليزية',
+      tapToSpeak: 'اضغط للتحدث بصوتك',
+      listeningSubtitle: 'تحدث بوضوح عبر ميكروفون جهازك...',
+      typeQuestionPlaceholder: 'أو اكتب استفسارك المتعلق بالسلامة الحرارية هنا...',
+      send: 'إرسال السؤال',
+      presetTitle: 'أسئلة شائعة وسريعة للعمال وسائقي التوصيل:',
+      listenEn: 'Listen in English',
+      listenAr: 'استمع بالعربية',
+      stopSpeech: 'إيقاف الصوت',
+      speed: 'السرعة',
+      readingEn: 'الإجابة باللغة الإنجليزية',
+      readingAr: 'الإجابة باللغة العربية',
+      emergencyBanner: 'تنبيه طوارئ: يوصى بالتوقف الفوري عن العمل والراحة في غرفة مكيفة وتناول السوائل الباردة.',
+      sourceGemini: 'تمت الإجابة عبر نموذج Gemini',
+      sourceFallback: 'تمت الإجابة وفق قواعد السلامة المهنية',
+      micNotSupported: 'التعرف على الصوت عبر الميكروفون غير مدعوم في متصفحك الحالي، يمكنك كتابة السؤال أو اختيار أحد الأسئلة السريعة أدناه.',
+    },
+    resultsAudio: {
+      title: 'قراءة والاستماع إلى النتائج (بالعربية والإنجليزية)',
+      subtitle: 'عرض مرئي واستماع صوتي مباشر لتقييم الإجهاد الحراري ومؤشر WBGT الحالي',
+      readEn: 'Read in English',
+      readAr: 'اقرأ بالعربية',
+      listenEn: '🔊 Listen in English',
+      listenAr: '🔊 استمع بالعربية',
+      stop: 'إيقاف الصوت',
+      playingAudio: 'جاري تشغيل الصوت...',
+      playbackSpeed: 'السرعة',
+      currentWbgt: 'مؤشر WBGT المحسوب',
+      riskStatus: 'مستوى الخطر',
+      actionRequired: 'الإجراء الوقائي المطلوب',
+      hydrationPlan: 'خطة شرب الماء',
+      middayBanStatus: 'حظر العمل وقت الظهيرة',
+    },
     footer: {
       disclaimerTitle: 'إشعار قانوني وطبي: أداة لدعم القرار وليست جهازاً طبياً',
-      disclaimerText: 'مشروع "درع الحرارة الذكي" (HeatShield AI) أداة تشغيلية لدعم القرار الميداني وليست جهازاً تشخيصياً أو طبياً معتمداً. الحدود المعروضة هي قيم إرشادية وتجريبية مستندة إلى إرشادات منظمة العمل الدولية (ISO 7243) وقرارات وزارة الموارد البشرية والتوطين في دولة الإمارات العربية المتحدة.',
+      disclaimerText: 'مشروع "درع الحرارة" (HeatShield) أداة تشغيلية لدعم القرار الميداني وليست جهازاً تشخيصياً أو طبياً معتمداً. الحدود المعروضة هي قيم إرشادية وتجريبية مستندة إلى إرشادات منظمة العمل الدولية (ISO 7243) وقرارات وزارة الموارد البشرية والتوطين في دولة الإمارات العربية المتحدة.',
     },
   },
 };
