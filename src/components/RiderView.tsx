@@ -24,6 +24,9 @@ import {
 } from 'lucide-react';
 import { AppLocale, UI_TRANSLATIONS } from '../utils/i18n';
 import { BilingualResultsAudioCard } from './BilingualResultsAudioCard';
+import { FlyingCard } from './FlyingCard';
+import { HydrationTrackerWidget } from './HydrationTrackerWidget';
+import { motion, useReducedMotion } from 'motion/react';
 
 interface RiderViewProps {
   evaluation: RiskEvaluation;
@@ -34,6 +37,13 @@ interface RiderViewProps {
   isAiLoading: boolean;
   locale?: AppLocale;
   onOpenVoiceQa: () => void;
+  waterMl: number;
+  electrolytesCount: number;
+  hydrationStreak: number;
+  goalStreakDays?: number;
+  lastHydrationTime: string | null;
+  onLogDrink: (ml: number, isElectrolyte?: boolean, wasOnSchedule?: boolean) => void;
+  onUndoDrink: (ml: number) => void;
 }
 
 // Arabic names for Dubai cooling stations
@@ -73,8 +83,16 @@ export const RiderView: React.FC<RiderViewProps> = ({
   isAiLoading,
   locale = 'en',
   onOpenVoiceQa,
+  waterMl,
+  electrolytesCount,
+  hydrationStreak,
+  goalStreakDays = 4,
+  lastHydrationTime,
+  onLogDrink,
+  onUndoDrink,
 }) => {
   const t = UI_TRANSLATIONS[locale];
+  const prefersReducedMotion = useReducedMotion();
 
   // Default coordinates: Downtown Dubai / Business Bay hub
   const [riderCoords, setRiderCoords] = useState<{ lat: number; lng: number }>({
@@ -147,30 +165,53 @@ export const RiderView: React.FC<RiderViewProps> = ({
   return (
     <div className="space-y-6">
       {/* 1. Primary Risk Card */}
-      <RiskCard evaluation={evaluation} onOpenWhyAlert={onOpenWhyAlert} locale={locale} />
+      <FlyingCard direction="scale" delay={0} onScrollReveal={false}>
+        <RiskCard evaluation={evaluation} onOpenWhyAlert={onOpenWhyAlert} locale={locale} />
+      </FlyingCard>
 
       {/* 2. Accessible Bilingual Results Read & Audio Player */}
-      <BilingualResultsAudioCard
-        evaluation={evaluation}
-        advice={advice}
-        locale={locale}
-        onOpenVoiceQa={onOpenVoiceQa}
-      />
+      <FlyingCard direction="left" delay={0.06} onScrollReveal={false}>
+        <BilingualResultsAudioCard
+          evaluation={evaluation}
+          advice={advice}
+          locale={locale}
+          onOpenVoiceQa={onOpenVoiceQa}
+        />
+      </FlyingCard>
 
       {/* 3. Multilingual Alert advisory with voice read-out */}
-      <MultilingualAlert
-        advice={advice}
-        currentLang={currentLang}
-        onChangeLanguage={onChangeLanguage}
-        isAiLoading={isAiLoading}
-        locale={locale}
-      />
+      <FlyingCard direction="right" delay={0.12}>
+        <MultilingualAlert
+          advice={advice}
+          currentLang={currentLang}
+          onChangeLanguage={onChangeLanguage}
+          isAiLoading={isAiLoading}
+          locale={locale}
+        />
+      </FlyingCard>
 
-      {/* 3. Innovation 5: "Cool-by Routing" Dynamic Window */}
-      <section
-        aria-label={t.rider.coolByTitle}
-        className="bg-white border border-[#e5dfd3] rounded-2xl p-5 sm:p-6 shadow-xs hover:shadow-md transition-shadow"
-      >
+      {/* 3b. Interactive Rider Hydration Tracker Widget */}
+      <FlyingCard direction="left" delay={0.08} hoverLift>
+        <HydrationTrackerWidget
+          evaluation={evaluation}
+          role="rider"
+          locale={locale}
+          waterMl={waterMl}
+          electrolytesCount={electrolytesCount}
+          hydrationStreak={hydrationStreak}
+          goalStreakDays={goalStreakDays}
+          lastLoggedTime={lastHydrationTime}
+          onLogDrink={onLogDrink}
+          onUndoDrink={onUndoDrink}
+        />
+      </FlyingCard>
+
+      {/* 4. Innovation 5: "Cool-by Routing" Dynamic Window */}
+      <FlyingCard direction="bottom" delay={0.05}>
+        <section
+          aria-label={t.rider.coolByTitle}
+          className="bg-white border border-[#e5dfd3] rounded-2xl p-5 sm:p-6 shadow-xs hover:shadow-md transition-shadow"
+        >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-[#ece6da]">
           <div className="flex items-center space-x-2.5 rtl:space-x-reverse">
             <div className="p-2.5 rounded-xl bg-[#edf4f0] text-[#173829]">
@@ -258,7 +299,8 @@ export const RiderView: React.FC<RiderViewProps> = ({
         {/* 5. Schematic Radar / Mini-Map View */}
         <div className="mt-5 grid grid-cols-1 lg:grid-cols-3 gap-5">
           {/* Visual Schematic Radar */}
-          <div className="bg-[#f7f5ee] p-5 rounded-xl border border-[#e2dcd0] flex flex-col items-center justify-center relative overflow-hidden min-h-[260px]">
+          <FlyingCard direction="left" delay={0.06}>
+            <div className="bg-[#f7f5ee] p-5 rounded-xl border border-[#e2dcd0] flex flex-col items-center justify-center relative overflow-hidden min-h-[260px] h-full">
             <div className="text-[11px] font-semibold text-[#426050] mb-2 w-full flex items-center justify-between">
               <span className="flex items-center space-x-1 rtl:space-x-reverse">
                 <Compass className="w-3.5 h-3.5 text-[#173829]" />
@@ -311,7 +353,8 @@ export const RiderView: React.FC<RiderViewProps> = ({
                 ? 'موقعك التقديري وسط مدينة دبي • انقر على أي محطة للملاحة المباشرة'
                 : 'Click any rest station pin to launch turn-by-turn navigation.'}
             </div>
-          </div>
+            </div>
+          </FlyingCard>
 
           {/* Top Nearest Rest Stations List */}
           <div className="lg:col-span-2 space-y-3">
@@ -324,9 +367,18 @@ export const RiderView: React.FC<RiderViewProps> = ({
               {computedStations.map((station, index) => {
                 const isNearest = index === 0;
                 return (
-                  <div
+                  <motion.div
                     key={station.id}
-                    className={`p-4 rounded-xl border transition-all flex flex-col justify-between ${
+                    initial={
+                      prefersReducedMotion
+                        ? false
+                        : { opacity: 0, x: index % 2 === 0 ? -36 : 36, y: 18, scale: 0.94 }
+                    }
+                    whileInView={{ opacity: 1, x: 0, y: 0, scale: 1 }}
+                    viewport={{ once: true, amount: 0.1 }}
+                    whileHover={prefersReducedMotion ? undefined : { y: -3, scale: 1.015 }}
+                    transition={{ type: 'spring', stiffness: 200, damping: 20, delay: index * 0.05 }}
+                    className={`p-4 rounded-xl border transition-shadow flex flex-col justify-between will-change-transform ${
                       isNearest
                         ? 'bg-[#edf4f0] border-[#173829]/40 shadow-xs'
                         : 'bg-[#f7f5ee] border-[#e2dcd0] hover:bg-white'
@@ -377,7 +429,7 @@ export const RiderView: React.FC<RiderViewProps> = ({
                         <span>{t.rider.route}</span>
                       </button>
                     </div>
-                  </div>
+                  </motion.div>
                 );
               })}
             </div>
@@ -385,32 +437,35 @@ export const RiderView: React.FC<RiderViewProps> = ({
         </div>
 
         {/* Rider Advisory Card with 3D Delivery Rider Illustration */}
-        <div className="mt-5 p-5 rounded-2xl bg-gradient-to-r from-[#EBF5F0] to-[#FAF8F3] border border-[#C5DFD0] flex flex-col sm:flex-row items-center gap-4 shadow-xs">
-          <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl overflow-hidden border-2 border-white shadow-md bg-white shrink-0">
-            <img
-              src="/assets/images/dubai_rider_3d_1794412011010.jpg"
-              alt="Dubai Delivery Rider 3D Character"
-              className="w-full h-full object-cover"
-            />
-          </div>
-
-          <div className="space-y-1 text-center sm:text-left rtl:sm:text-right">
-            <div className="flex items-center justify-center sm:justify-start rtl:sm:justify-start space-x-1.5 rtl:space-x-reverse text-xs font-bold text-[#173829]">
-              <Bike className="w-4 h-4 text-[#173829]" />
-              <span>
-                {locale === 'ar'
-                  ? 'بروتوكول السلامة المعتمد لسائقي التوصيل في دبي'
-                  : 'Dubai Delivery Rider Thermal Protocol'}
-              </span>
+        <FlyingCard direction="scale" delay={0.1}>
+          <div className="mt-5 p-5 rounded-2xl bg-gradient-to-r from-[#EBF5F0] to-[#FAF8F3] border border-[#C5DFD0] flex flex-col sm:flex-row items-center gap-4 shadow-xs">
+            <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl overflow-hidden border-2 border-white shadow-md bg-white shrink-0">
+              <img
+                src="/assets/images/dubai_rider_3d_1794412011010.jpg"
+                alt="Dubai Delivery Rider 3D Character"
+                className="w-full h-full object-cover"
+              />
             </div>
-            <p className="text-xs text-[#2D4D3C] leading-relaxed">
-              {locale === 'ar'
-                ? 'تزيد حرارة الإسفلت المشعة من الحمل الحراري بمقدار 3 إلى 5 درجات مئوية أثناء الانتظار عند الإشارات. ارتدِ سترة التبريد الترطيبية وتوجه لأقرب محطة استراحة مبردة قبل موعد Cool-by المحدد.'
-                : 'Asphalt solar re-radiation elevates effective skin temperature by +4°C during street stops. Hydrate with electrolyte water every 30 mins and navigate to nearest shaded sanctuary.'}
-            </p>
+
+            <div className="space-y-1 text-center sm:text-left rtl:sm:text-right">
+              <div className="flex items-center justify-center sm:justify-start rtl:sm:justify-start space-x-1.5 rtl:space-x-reverse text-xs font-bold text-[#173829]">
+                <Bike className="w-4 h-4 text-[#173829]" />
+                <span>
+                  {locale === 'ar'
+                    ? 'بروتوكول السلامة المعتمد لسائقي التوصيل في دبي'
+                    : 'Dubai Delivery Rider Thermal Protocol'}
+                </span>
+              </div>
+              <p className="text-xs text-[#2D4D3C] leading-relaxed">
+                {locale === 'ar'
+                  ? 'تزيد حرارة الإسفلت المشعة من الحمل الحراري بمقدار 3 إلى 5 درجات مئوية أثناء الانتظار عند الإشارات. ارتدِ سترة التبريد الترطيبية وتوجه لأقرب محطة استراحة مبردة قبل موعد Cool-by المحدد.'
+                  : 'Asphalt solar re-radiation elevates effective skin temperature by +4°C during street stops. Hydrate with electrolyte water every 30 mins and navigate to nearest shaded sanctuary.'}
+              </p>
+            </div>
           </div>
-        </div>
-      </section>
+        </FlyingCard>
+        </section>
+      </FlyingCard>
     </div>
   );
 };

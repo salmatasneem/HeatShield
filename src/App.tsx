@@ -19,18 +19,19 @@ import { DemoControlsDrawer } from './components/DemoControlsDrawer';
 import { WhyAlertDrawer } from './components/WhyAlertDrawer';
 import { EvidenceModal } from './components/EvidenceModal';
 import { ImpactModal } from './components/ImpactModal';
-import { GuestWelcomeModal } from './components/GuestWelcomeModal';
+import { LandingPage } from './components/LandingPage';
 import { VoiceQaModal } from './components/VoiceQaModal';
 import { Footer } from './components/Footer';
 import { HeroBanner } from './components/HeroBanner';
 import { WifiOff, HardHat, Bike, Users, Mic } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
 
 export default function App() {
   // Global Interface Locale (English / Dubai Arabic)
   const [locale, setLocale] = useState<AppLocale>('en');
 
-  // Guest Access modal (first turn screen)
-  const [showGuestWelcome, setShowGuestWelcome] = useState(true);
+  // Landing Page first screen -> "Continue as Guest" enters the full workspace
+  const [hasEnteredApp, setHasEnteredApp] = useState(false);
   const [currentRole, setCurrentRole] = useState<Role>('worker');
 
   // Multilingual alert voice language
@@ -44,11 +45,6 @@ export default function App() {
     } else {
       setCurrentLang('en');
     }
-  };
-
-  // Toggle locale between EN and AR
-  const handleToggleLocale = () => {
-    handleSetLocale(locale === 'en' ? 'ar' : 'en');
   };
 
   // Modals & Drawers
@@ -78,6 +74,32 @@ export default function App() {
   const [isNewWorker, setIsNewWorker] = useState(false);
   const [symptoms, setSymptoms] = useState<string[]>([]);
   const [isMiddayBanSimulated, setIsMiddayBanSimulated] = useState(false);
+
+  // Interactive Hydration Tracker state (shared across Worker & Rider views)
+  const [waterMl, setWaterMl] = useState<number>(750);
+  const [electrolytesCount, setElectrolytesCount] = useState<number>(1);
+  const [hydrationStreak, setHydrationStreak] = useState<number>(3);
+  const [lastHydrationTime, setLastHydrationTime] = useState<string | null>(null);
+
+  const handleLogDrink = (
+    ml: number,
+    isElectrolyte: boolean = false,
+    wasOnSchedule: boolean = true
+  ) => {
+    setWaterMl((prev) => Math.min(8000, prev + ml));
+    if (isElectrolyte) {
+      setElectrolytesCount((prev) => prev + 1);
+    }
+    setHydrationStreak((prev) => (wasOnSchedule ? prev + 1 : 1));
+    setLastHydrationTime(
+      new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    );
+  };
+
+  const handleUndoDrink = (ml: number) => {
+    setWaterMl((prev) => Math.max(0, prev - ml));
+    setHydrationStreak((prev) => Math.max(0, prev - 1));
+  };
 
   // 60-Second Heat-Wave Scenario Ramp state
   const [isHeatWaveRunning, setIsHeatWaveRunning] = useState(false);
@@ -136,6 +158,8 @@ export default function App() {
   });
 
   const prevRiskLevelRef = useRef<RiskLevel>(currentEvaluation.riskLevel);
+  const prevMiddayBanRef = useRef<boolean>(currentEvaluation.isMiddayBanActive);
+  const prevSymptomsKeyRef = useRef<string>(symptoms.join(','));
   const [isAiLoading, setIsAiLoading] = useState(false);
 
   // Initial Gemini heat advice with authentic Dubai Arabic
@@ -277,15 +301,23 @@ export default function App() {
     ]
   );
 
+  const symptomsKey = symptoms.join(',');
+
   useEffect(() => {
-    if (currentEvaluation.riskLevel !== prevRiskLevelRef.current) {
+    if (
+      currentEvaluation.riskLevel !== prevRiskLevelRef.current ||
+      currentEvaluation.isMiddayBanActive !== prevMiddayBanRef.current ||
+      symptomsKey !== prevSymptomsKeyRef.current
+    ) {
       prevRiskLevelRef.current = currentEvaluation.riskLevel;
+      prevMiddayBanRef.current = currentEvaluation.isMiddayBanActive;
+      prevSymptomsKeyRef.current = symptomsKey;
       fetchGeminiAdvice(currentEvaluation.riskLevel);
     }
-  }, [currentEvaluation.riskLevel, fetchGeminiAdvice]);
+  }, [currentEvaluation.riskLevel, currentEvaluation.isMiddayBanActive, symptomsKey, fetchGeminiAdvice]);
 
   // Request SmartShift plan from Gemini on demand
-  const handleRequestSmartShiftPlan = async () => {
+  const handleRequestSmartShiftPlan = async (districtName?: string) => {
     setIsPlanLoading(true);
     try {
       const response = await fetch('/api/gemini/smartshift-plan', {
@@ -294,14 +326,15 @@ export default function App() {
         body: JSON.stringify({
           currentWbgt: currentEvaluation.wbgt,
           crews: ['Crew A', 'Crew B', 'Crew C'],
-          forecastSummary: `Ambient air ${airTemp}°C, humidity ${humidity}%, WBGT ${currentEvaluation.wbgt}°C in Dubai.`,
+          district: districtName,
+          forecastSummary: `Ambient air ${airTemp}°C, humidity ${humidity}%, WBGT ${currentEvaluation.wbgt}°C in ${districtName ? `${districtName}, Dubai` : 'Dubai'}.`,
         }),
       });
       if (response.ok) {
         const planData = await response.json();
         setSmartShiftPlan(planData);
       }
-    } catch (err) {
+    } catch {
       // Handled cleanly
     } finally {
       setIsPlanLoading(false);
@@ -449,11 +482,75 @@ export default function App() {
     });
   };
 
+  const handleContinueAsGuest = (role: Role) => {
+    setCurrentRole(role);
+    setHasEnteredApp(true);
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  };
+
+  if (!hasEnteredApp) {
+    return (
+      <>
+        <LandingPage
+          evaluation={currentEvaluation}
+          locale={locale}
+          onSetLocale={handleSetLocale}
+          initialRole={currentRole}
+          onContinueAsGuest={handleContinueAsGuest}
+          onOpenVoiceQa={() => setIsVoiceQaOpen(true)}
+          onOpenEvidence={() => setIsEvidenceOpen(true)}
+          onOpenImpact={() => setIsImpactOpen(true)}
+        />
+
+        {/* Evidence & ESP32 Hardware Guide Modal */}
+        <EvidenceModal
+          isOpen={isEvidenceOpen}
+          onClose={() => setIsEvidenceOpen(false)}
+          locale={locale}
+        />
+
+        {/* Impact Metrics & Hypotheses Modal */}
+        <ImpactModal
+          isOpen={isImpactOpen}
+          onClose={() => setIsImpactOpen(false)}
+          feedbackState={feedbackState}
+          locale={locale}
+        />
+
+        {/* Voice-Based Question and Answer Facility Modal */}
+        <VoiceQaModal
+          isOpen={isVoiceQaOpen}
+          onClose={() => setIsVoiceQaOpen(false)}
+          evaluation={currentEvaluation}
+          role={currentRole}
+          locale={locale}
+        />
+
+        {/* Persistent Accessible Voice Assistant Floating Button */}
+        <button
+          onClick={() => setIsVoiceQaOpen(true)}
+          aria-label={locale === 'ar' ? 'المساعد الصوتي للسلامة' : 'Voice Safety Q&A Assistant'}
+          title={locale === 'ar' ? 'المساعد الصوتي للسلامة - تحدث بصوتك واستمع للإجابة' : 'Voice Safety Q&A - Speak and listen in English & Arabic'}
+          className="fixed bottom-6 right-5 rtl:right-auto rtl:left-5 z-40 bg-[#173829] hover:bg-[#24533D] text-[#FAF8F3] px-3.5 py-3 sm:px-4 sm:py-3.5 rounded-2xl shadow-xl flex items-center space-x-2.5 rtl:space-x-reverse font-bold text-xs sm:text-sm border-2 border-[#FAF8F3] transition-all hover:scale-105 active:scale-95 group cursor-pointer"
+        >
+          <span className="relative flex h-3 w-3">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#A3E5C1] opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-3 w-3 bg-[#A3E5C1]"></span>
+          </span>
+          <Mic className="w-5 h-5 text-[#A3E5C1] group-hover:animate-pulse" />
+          <span className="hidden sm:inline">
+            {locale === 'ar' ? 'المساعد الصوتي • اسأل صوتياً' : 'Voice Q&A • Ask with Voice'}
+          </span>
+        </button>
+      </>
+    );
+  }
+
   return (
     <div
       dir={locale === 'ar' ? 'rtl' : 'ltr'}
       lang={locale}
-      className="min-h-screen bg-[#FAF8F3] text-[#173829] flex flex-col font-sans selection:bg-[#173829] selection:text-[#FAF8F3] pb-16 md:pb-0"
+      className="min-h-screen bg-[#FAF8F3] text-[#173829] flex flex-col font-sans selection:bg-[#173829] selection:text-[#FAF8F3] pb-16 md:pb-0 overflow-x-hidden"
     >
       {/* 1. Header with Role Switcher, Heritage Green Theme & Bilingual Language Selector */}
       <Header
@@ -467,6 +564,10 @@ export default function App() {
         onOpenEvidence={() => setIsEvidenceOpen(true)}
         onOpenImpact={() => setIsImpactOpen(true)}
         onOpenVoiceQa={() => setIsVoiceQaOpen(true)}
+        onBackToLanding={() => {
+          setHasEnteredApp(false);
+          window.scrollTo({ top: 0, behavior: 'auto' });
+        }}
       />
 
       {/* Sensor Fallback Warning Banner */}
@@ -499,51 +600,76 @@ export default function App() {
           onSetLocale={handleSetLocale}
         />
 
-        {currentRole === 'worker' && (
-          <WorkerView
-            evaluation={currentEvaluation}
-            advice={advice}
-            currentLang={currentLang}
-            onChangeLanguage={(l) => setCurrentLang(l)}
-            onOpenWhyAlert={() => setIsWhyAlertOpen(true)}
-            symptoms={symptoms}
-            onToggleSymptom={handleToggleSymptom}
-            isNewWorker={isNewWorker}
-            onToggleNewWorker={(v) => setIsNewWorker(v)}
-            isAiLoading={isAiLoading}
-            locale={locale}
-            onOpenVoiceQa={() => setIsVoiceQaOpen(true)}
-          />
-        )}
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={currentRole}
+            initial={{ opacity: 0, y: 24, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -18, scale: 0.98 }}
+            transition={{ type: 'spring', stiffness: 220, damping: 24 }}
+            className="will-change-transform"
+          >
+            {currentRole === 'worker' && (
+              <WorkerView
+                evaluation={currentEvaluation}
+                advice={advice}
+                currentLang={currentLang}
+                onChangeLanguage={(l) => setCurrentLang(l)}
+                onOpenWhyAlert={() => setIsWhyAlertOpen(true)}
+                symptoms={symptoms}
+                onToggleSymptom={handleToggleSymptom}
+                isNewWorker={isNewWorker}
+                onToggleNewWorker={(v) => setIsNewWorker(v)}
+                isAiLoading={isAiLoading}
+                locale={locale}
+                onOpenVoiceQa={() => setIsVoiceQaOpen(true)}
+                waterMl={waterMl}
+                electrolytesCount={electrolytesCount}
+                hydrationStreak={hydrationStreak}
+                goalStreakDays={4}
+                lastHydrationTime={lastHydrationTime}
+                onLogDrink={handleLogDrink}
+                onUndoDrink={handleUndoDrink}
+              />
+            )}
 
-        {currentRole === 'rider' && (
-          <RiderView
-            evaluation={currentEvaluation}
-            advice={advice}
-            currentLang={currentLang}
-            onChangeLanguage={(l) => setCurrentLang(l)}
-            onOpenWhyAlert={() => setIsWhyAlertOpen(true)}
-            isAiLoading={isAiLoading}
-            locale={locale}
-            onOpenVoiceQa={() => setIsVoiceQaOpen(true)}
-          />
-        )}
+            {currentRole === 'rider' && (
+              <RiderView
+                evaluation={currentEvaluation}
+                advice={advice}
+                currentLang={currentLang}
+                onChangeLanguage={(l) => setCurrentLang(l)}
+                onOpenWhyAlert={() => setIsWhyAlertOpen(true)}
+                isAiLoading={isAiLoading}
+                locale={locale}
+                onOpenVoiceQa={() => setIsVoiceQaOpen(true)}
+                waterMl={waterMl}
+                electrolytesCount={electrolytesCount}
+                hydrationStreak={hydrationStreak}
+                goalStreakDays={4}
+                lastHydrationTime={lastHydrationTime}
+                onLogDrink={handleLogDrink}
+                onUndoDrink={handleUndoDrink}
+              />
+            )}
 
-        {currentRole === 'supervisor' && (
-          <SupervisorView
-            evaluation={currentEvaluation}
-            onOpenWhyAlert={() => setIsWhyAlertOpen(true)}
-            feedbackState={feedbackState}
-            onRecordFeedback={handleRecordFeedback}
-            smartShiftPlan={smartShiftPlan}
-            onRequestPlan={handleRequestSmartShiftPlan}
-            isPlanLoading={isPlanLoading}
-            historyWbgt={historyWbgt}
-            locale={locale}
-            advice={advice}
-            onOpenVoiceQa={() => setIsVoiceQaOpen(true)}
-          />
-        )}
+            {currentRole === 'supervisor' && (
+              <SupervisorView
+                evaluation={currentEvaluation}
+                onOpenWhyAlert={() => setIsWhyAlertOpen(true)}
+                feedbackState={feedbackState}
+                onRecordFeedback={handleRecordFeedback}
+                smartShiftPlan={smartShiftPlan}
+                onRequestPlan={handleRequestSmartShiftPlan}
+                isPlanLoading={isPlanLoading}
+                historyWbgt={historyWbgt}
+                locale={locale}
+                advice={advice}
+                onOpenVoiceQa={() => setIsVoiceQaOpen(true)}
+              />
+            )}
+          </motion.div>
+        </AnimatePresence>
       </main>
 
       {/* Mobile Sticky Bottom Navigation Bar (Real App Feel) */}
@@ -642,17 +768,6 @@ export default function App() {
         onClose={() => setIsImpactOpen(false)}
         feedbackState={feedbackState}
         locale={locale}
-      />
-
-      {/* Guest Welcome First-Screen Modal */}
-      <GuestWelcomeModal
-        isOpen={showGuestWelcome}
-        onContinueAsGuest={(role) => {
-          setCurrentRole(role);
-          setShowGuestWelcome(false);
-        }}
-        locale={locale}
-        onSetLocale={handleSetLocale}
       />
 
       {/* Voice-Based Question and Answer Facility Modal */}

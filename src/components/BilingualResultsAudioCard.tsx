@@ -1,21 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import {
   Volume2,
-  VolumeX,
   Play,
   Square,
   Sparkles,
-  Thermometer,
-  Droplets,
-  Sun,
-  ShieldAlert,
-  ShieldCheck,
-  GlassWater,
   Languages,
   CheckCircle2,
-  HelpCircle,
 } from 'lucide-react';
-import { RiskEvaluation, GeminiHeatAdvice, SupportedLanguage } from '../types';
+import { RiskEvaluation, GeminiHeatAdvice } from '../types';
 import { AppLocale, UI_TRANSLATIONS } from '../utils/i18n';
 import { playTtsOrFallback, stopAllSpeech } from '../utils/speech';
 
@@ -115,12 +107,6 @@ export const BilingualResultsAudioCard: React.FC<BilingualResultsAudioCardProps>
       () => setIsPlayingAr(false),
       speechSpeed
     );
-  };
-
-  const handleStopAll = () => {
-    stopAllSpeech();
-    setIsPlayingEn(false);
-    setIsPlayingAr(false);
   };
 
   return (
@@ -369,7 +355,9 @@ export const BilingualResultsAudioCard: React.FC<BilingualResultsAudioCardProps>
                     ? 'خطر حرج جداً'
                     : riskLevel === 'High'
                     ? 'إجهاد حراري مرتفع'
-                    : 'معتدل'}
+                    : riskLevel === 'Moderate'
+                    ? 'معتدل'
+                    : 'منخفض وآمن'}
                 </div>
               </div>
               <div className="p-3 bg-white rounded-xl border border-[#E5DFD3]">

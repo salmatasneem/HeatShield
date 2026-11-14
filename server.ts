@@ -7,19 +7,58 @@ import { GoogleGenAI, Type } from '@google/genai';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+function resolveServerPort(): number {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--port' && args[i + 1]) {
+      const parsed = parseInt(args[i + 1], 10);
+      if (!Number.isNaN(parsed)) return parsed;
+    }
+    if (args[i].startsWith('--port=')) {
+      const parsed = parseInt(args[i].slice('--port='.length), 10);
+      if (!Number.isNaN(parsed)) return parsed;
+    }
+  }
 
-app.use(express.json());
+  const envPort = process.env.PORT ? parseInt(process.env.PORT, 10) : NaN;
+  const nginxPort = process.env.NGINX_PORT ? parseInt(process.env.NGINX_PORT, 10) : NaN;
+  const defaultAppPort = process.env.DEFAULT_APP_PORT ? parseInt(process.env.DEFAULT_APP_PORT, 10) : 3000;
+
+  if (process.env.NODE_ENV !== 'production') {
+    return !Number.isNaN(defaultAppPort) ? defaultAppPort : 3000;
+  }
+
+  if (!Number.isNaN(nginxPort) && envPort === nginxPort) {
+    return !Number.isNaN(defaultAppPort) ? defaultAppPort : 3000;
+  }
+
+  return !Number.isNaN(envPort) ? envPort : 3000;
+}
+
+const PORT = resolveServerPort();
+
+app.use(express.json({ limit: '15mb' }));
 
 // Initialize GoogleGenAI server-side with User-Agent header
 let aiClient: GoogleGenAI | null = null;
+let aiBetaClient: GoogleGenAI | null = null;
+let aiAlphaClient: GoogleGenAI | null = null;
+
 if (process.env.GEMINI_API_KEY) {
+  const baseHeaders = { 'User-Agent': 'aistudio-build' };
   aiClient = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY,
     httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
+      apiVersion: 'v1beta',
+      headers: baseHeaders,
+    },
+  });
+  aiBetaClient = aiClient;
+  aiAlphaClient = new GoogleGenAI({
+    apiKey: process.env.GEMINI_API_KEY,
+    httpOptions: {
+      apiVersion: 'v1alpha',
+      headers: baseHeaders,
     },
   });
 }
@@ -186,11 +225,11 @@ Return JSON strictly matching schema:
 
 // 2. Gemini SmartShift Schedule Planner endpoint
 app.post('/api/gemini/smartshift-plan', async (req: Request, res: Response) => {
-  const { currentWbgt, forecastSummary } = req.body;
+  const { currentWbgt, forecastSummary, district } = req.body;
 
   const fallbackPlan = {
     rationale:
-      'To mitigate severe afternoon thermal strain while strictly abiding by UAE ministerial decree, heavy physical activities are rescheduled to the early morning (06:00-09:30) and late afternoon (16:00-18:00). All outdoor work is legally halted between 12:30 and 15:00.',
+      `${district ? `For ${district}: ` : ''}To mitigate severe afternoon thermal strain while strictly abiding by UAE ministerial decree, heavy physical activities are rescheduled to the early morning (06:00-09:30) and late afternoon (16:00-18:00). All outdoor work is legally halted between 12:30 and 15:00.`,
     timeline: [
       {
         timeSlot: '06:00 - 09:30',
@@ -202,6 +241,7 @@ app.post('/api/gemini/smartshift-plan', async (req: Request, res: Response) => {
         },
         risk: 'Low to Moderate',
         coolingProtocol: 'Hydration every 25 mins',
+        isMiddayBan: false,
       },
       {
         timeSlot: '09:30 - 12:30',
@@ -213,6 +253,7 @@ app.post('/api/gemini/smartshift-plan', async (req: Request, res: Response) => {
         },
         risk: 'Moderate to High',
         coolingProtocol: '15 min shade break per 45 min work; cold electrolyte stations active',
+        isMiddayBan: false,
       },
       {
         timeSlot: '12:30 - 15:00',
@@ -236,6 +277,7 @@ app.post('/api/gemini/smartshift-plan', async (req: Request, res: Response) => {
         },
         risk: 'Moderate',
         coolingProtocol: 'Buddy hydration check-in; ice towel reapplication',
+        isMiddayBan: false,
       },
       {
         timeSlot: '16:30 - 18:00',
@@ -247,6 +289,7 @@ app.post('/api/gemini/smartshift-plan', async (req: Request, res: Response) => {
         },
         risk: 'Low to Moderate',
         coolingProtocol: 'Normal hydration protocol',
+        isMiddayBan: false,
       },
     ],
     adherenceNotes: [
@@ -264,23 +307,57 @@ app.post('/api/gemini/smartshift-plan', async (req: Request, res: Response) => {
     const prompt = `
 You are the SmartShift industrial heat scheduler for construction and logistics operations in Dubai, UAE.
 Current Conditions:
+${district ? `- Target District: ${district}` : ''}
 - WBGT: ${currentWbgt}°C
 - Forecast: ${forecastSummary || 'Peak heat between 11:30 and 15:30 with high UV index and humidity.'}
 - Crews: Crew A (Moderate), Crew B (Heavy), Crew C (Very Heavy)
 
 REGULATORY CONSTRAINTS (STRICT):
-1. Between 12:30 and 15:00, all outdoor work is legally prohibited under UAE MoHRE Midday Break policy. NEVER schedule any outdoor task during this window. Mark it as mandatory air-conditioned rest.
+1. Between 12:30 and 15:00, all outdoor work is legally prohibited under UAE MoHRE Midday Break policy. NEVER schedule any outdoor task during this window. Mark it as mandatory air-conditioned rest and set isMiddayBan to true.
 2. Shift heavy tasks to cooler morning (06:00 - 09:30) or late afternoon (16:00 - 18:00).
 3. Assign rotation and cooling protocols.
 
 Generate JSON with:
 - rationale: 2-3 sentences explaining heat prevention.
-- timeline: array of 5 time-slot objects (06:00 to 18:00), each with: timeSlot, label, crewActions (Crew A, B, C), risk, coolingProtocol, isMiddayBan (boolean).
+- timeline: array of 5 time-slot objects (06:00 to 18:00), each with: timeSlot, label, crewActions (Crew A, Crew B, Crew C), risk, coolingProtocol, isMiddayBan (boolean).
 - adherenceNotes: array of 3 bullet points.
 `;
 
     const responseText = await generateContentResilient({
       contents: prompt,
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          rationale: { type: Type.STRING },
+          timeline: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                timeSlot: { type: Type.STRING },
+                label: { type: Type.STRING },
+                crewActions: {
+                  type: Type.OBJECT,
+                  properties: {
+                    'Crew A': { type: Type.STRING },
+                    'Crew B': { type: Type.STRING },
+                    'Crew C': { type: Type.STRING },
+                  },
+                },
+                risk: { type: Type.STRING },
+                coolingProtocol: { type: Type.STRING },
+                isMiddayBan: { type: Type.BOOLEAN },
+              },
+              required: ['timeSlot', 'label', 'risk', 'coolingProtocol', 'isMiddayBan'],
+            },
+          },
+          adherenceNotes: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+        },
+        required: ['rationale', 'timeline', 'adherenceNotes'],
+      },
     });
 
     if (!responseText) {
@@ -469,53 +546,131 @@ app.post('/api/gemini/tts', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Text is required for TTS synthesis' });
   }
 
-  if (!aiClient) {
+  if (!aiBetaClient && !aiAlphaClient) {
     return res.json({ fallback: true, message: 'Gemini client not initialized; use client-side speech synthesis' });
   }
 
-  try {
-    const voiceName = language === 'ar' ? 'Kore' : 'Puck';
-    const truncatedText = text.slice(0, 450); // Keep within fast real-time TTS window
+  const voiceName = language === 'ar' ? 'Kore' : 'Puck';
+  const truncatedText = text.slice(0, 600);
 
-    const response = await aiClient.models.generateContent({
-      model: 'gemini-3.8-flash-lite-tts',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            {
-              text: truncatedText,
-              speechMetadata: {
-                style: language === 'ar' ? 'Clear, protective voice in authentic Arabic' : 'Clear, friendly occupational safety voice',
-              },
+  // Attempt 1: v1beta with speechConfig (standard Gemini TTS format)
+  const attempts: Array<{ client: GoogleGenAI | null; model: string; withMetadata: boolean }> = [
+    { client: aiBetaClient, model: 'gemini-3.8-flash-lite-tts', withMetadata: false },
+    { client: aiAlphaClient, model: 'gemini-3.8-flash-lite-tts', withMetadata: true },
+    { client: aiBetaClient, model: 'gemini-3.8-flash-tts', withMetadata: false },
+  ];
+
+  let lastError = '';
+
+  for (const attempt of attempts) {
+    if (!attempt.client) continue;
+    try {
+      const part: any = { text: truncatedText };
+      if (attempt.withMetadata) {
+        part.speechMetadata = {
+          style:
+            language === 'ar'
+              ? 'Clear, protective occupational safety announcer speaking authentic Arabic'
+              : 'Clear, friendly occupational safety voice',
+        };
+      }
+
+      const response = await attempt.client.models.generateContent({
+        model: attempt.model,
+        contents: [
+          {
+            role: 'user',
+            parts: [part],
+          },
+        ],
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName },
             },
-          ],
-        },
-      ],
-      config: {
-        responseModalities: ['AUDIO'],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: { voiceName },
           },
         },
-      },
-    });
-
-    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (base64Audio) {
-      return res.json({
-        audioBase64: base64Audio,
-        mimeType: 'audio/wav',
-        source: 'gemini-3.8-flash-lite-tts',
       });
-    }
 
-    return res.json({ fallback: true });
-  } catch (err: any) {
-    console.log('Gemini TTS fallback note:', err?.message?.slice?.(0, 80));
-    return res.json({ fallback: true, error: err.message });
+      const inlineData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+      if (inlineData?.data) {
+        return res.json({
+          audioBase64: inlineData.data,
+          mimeType: inlineData.mimeType || 'audio/wav',
+          source: attempt.model,
+        });
+      }
+    } catch (err: any) {
+      lastError = err?.message || String(err);
+      console.log(`Gemini TTS attempt (${attempt.model}, meta=${attempt.withMetadata}) note:`, lastError.slice(0, 140));
+    }
   }
+
+  return res.json({ fallback: true, error: lastError });
+});
+
+// 2d. Server-Side Audio Transcription Endpoint (English & Arabic via gemini-3.5-transcribe)
+app.post('/api/gemini/transcribe', async (req: Request, res: Response) => {
+  const { audioBase64, mimeType = 'audio/webm', language = 'en' } = req.body;
+
+  if (!audioBase64 || typeof audioBase64 !== 'string') {
+    return res.status(400).json({ error: 'Audio recording data is required for transcription' });
+  }
+
+  const client = aiBetaClient || aiClient;
+  if (!client) {
+    return res.status(503).json({
+      error: 'Gemini transcription service unavailable (missing API key)',
+    });
+  }
+
+  const normalizedMime = String(mimeType).split(';')[0].trim() || 'audio/webm';
+  const promptText =
+    language === 'ar'
+      ? 'Transcribe the spoken audio accurately into Arabic script (العربية). Output ONLY the exact spoken Arabic words with proper punctuation. Do not translate to English and do not add commentary.'
+      : 'Transcribe the spoken audio accurately in English. Output ONLY the exact spoken English words with proper punctuation. Do not translate and do not add commentary.';
+
+  const modelsToTry = ['gemini-3.5-transcribe', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+  let lastError = '';
+
+  for (const model of modelsToTry) {
+    try {
+      const response = await client.models.generateContent({
+        model,
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                mimeType: normalizedMime,
+                data: audioBase64,
+              },
+            },
+            { text: promptText },
+          ],
+        },
+      });
+
+      const transcript = (response.text || '')
+        .replace(/^["'`]+|["'`]+$/g, '')
+        .trim();
+
+      if (transcript) {
+        return res.json({
+          transcript,
+          language,
+          source: model,
+        });
+      }
+    } catch (err: any) {
+      lastError = err?.message || String(err);
+      console.log(`Gemini transcribe (${model}) note:`, lastError.slice(0, 140));
+    }
+  }
+
+  return res.status(502).json({
+    error: lastError || 'Could not transcribe audio clip. Please speak clearly and try again.',
+  });
 });
 
 // 3. Sensor URL Proxy endpoint (solves CORS when ESP32 writes to Firebase Realtime DB or custom REST endpoint)
@@ -576,16 +731,33 @@ app.get('/api/weather-forecast', async (_req: Request, res: Response) => {
   return res.json({ fallback: true, hours: fallbackHours });
 });
 
+// Health check endpoint
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({ status: 'ok', port: PORT });
+});
+
 // Setup Vite middleware in dev or static serving in production
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
 
   if (!isProd) {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
+    const vitePromise = createViteServer({
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        watch: null,
+      },
       appType: 'spa',
     });
-    app.use(vite.middlewares);
+
+    app.use(async (req: Request, res: Response, next) => {
+      try {
+        const vite = await vitePromise;
+        vite.middlewares(req, res, next);
+      } catch (err) {
+        next(err);
+      }
+    });
   } else {
     const distPath = path.resolve('dist');
     app.use(express.static(distPath));

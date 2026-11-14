@@ -25,6 +25,7 @@ interface HeaderProps {
   onOpenEvidence: () => void;
   onOpenImpact: () => void;
   onOpenVoiceQa?: () => void;
+  onBackToLanding?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -38,6 +39,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenEvidence,
   onOpenImpact,
   onOpenVoiceQa,
+  onBackToLanding,
 }) => {
   const t = UI_TRANSLATIONS[locale];
 
@@ -46,8 +48,13 @@ export const Header: React.FC<HeaderProps> = ({
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-20 gap-3">
           {/* Brand Logo & Title with Arabic Calligraphy & Heritage Green */}
-          <div className="flex items-center space-x-3 rtl:space-x-reverse">
-            <div className="relative flex items-center justify-center w-11 h-11 rounded-2xl bg-[#173829] text-white shadow-md shadow-[#173829]/20 border border-[#24533D]/40">
+          <button
+            type="button"
+            onClick={onBackToLanding}
+            title={locale === 'ar' ? 'العودة إلى الصفحة الرئيسية' : 'Return to Landing Page'}
+            className="flex items-center space-x-3 rtl:space-x-reverse text-start cursor-pointer hover:opacity-90 transition-opacity"
+          >
+            <div className="relative flex items-center justify-center w-11 h-11 rounded-2xl bg-[#173829] text-white shadow-md shadow-[#173829]/20 border border-[#24533D]/40 shrink-0">
               <ShieldAlert className="w-5 h-5 text-[#FAF8F3]" />
               {/* UAE Crimson red accent dot */}
               <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-[#C81D25] border-2 border-[#FAF8F3]" />
@@ -68,7 +75,7 @@ export const Header: React.FC<HeaderProps> = ({
                   : 'Dubai Municipal Heat Risk & SmartShift Early Warning Platform'}
               </p>
             </div>
-          </div>
+          </button>
 
           {/* Desktop App Role Switcher in Pastel Sage Container */}
           <nav

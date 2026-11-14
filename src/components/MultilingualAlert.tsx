@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Volume2, VolumeX, Globe, Sparkles, CheckCircle2 } from 'lucide-react';
 import { GeminiHeatAdvice, SupportedLanguage } from '../types';
-import { speakAlertText } from '../utils/speech';
+import { playTtsOrFallback, stopAllSpeech } from '../utils/speech';
 import { AppLocale, UI_TRANSLATIONS } from '../utils/i18n';
 
 interface MultilingualAlertProps {
@@ -43,18 +43,25 @@ export const MultilingualAlert: React.FC<MultilingualAlertProps> = ({
 
   const isRtl = currentLang === 'ar' || currentLang === 'ur';
 
-  const handleSpeak = () => {
+  useEffect(() => {
+    return () => {
+      stopAllSpeech();
+    };
+  }, []);
+
+  const handleSpeak = async () => {
     if (isSpeaking) {
-      window.speechSynthesis?.cancel();
+      stopAllSpeech();
       setIsSpeaking(false);
       return;
     }
 
-    speakAlertText(
+    await playTtsOrFallback(
       activeAlertText,
       currentLang,
       () => setIsSpeaking(true),
-      () => setIsSpeaking(false)
+      () => setIsSpeaking(false),
+      0.95
     );
   };
 
@@ -127,7 +134,7 @@ export const MultilingualAlert: React.FC<MultilingualAlertProps> = ({
         <div className="mt-2 text-[11px] text-[#c3d9cd] flex items-center justify-between flex-wrap gap-2">
           <span>{t.alert.clarityTarget}</span>
           <span className="font-arabic-calligraphy text-xs text-[#e2ebe5]">
-            دِرْعُ الحَرَارَةِ الذَّكِيّ • صِحَّتُكُمْ أَوْلَوِيَّتُنَا
+            دِرْعُ الحَرَارَةِ • صِحَّتُكُمْ أَوْلَوِيَّتُنَا
           </span>
         </div>
       </div>
@@ -160,10 +167,14 @@ export const MultilingualAlert: React.FC<MultilingualAlertProps> = ({
               >
                 <CheckCircle2 className="w-4 h-4 text-[#24533d] shrink-0 mt-0.5" />
                 <span className="font-medium leading-relaxed">
-                  {locale === 'ar' && idx === 0 && action.includes('Stop outdoor')
+                  {locale === 'ar' && action.includes('Stop outdoor')
                     ? 'إيقاف العمل تحت أشعة الشمس فوراً والتوجه لنقطة استراحة مبردة.'
-                    : locale === 'ar' && idx === 1
+                    : locale === 'ar' && action.includes('Take mandatory')
+                    ? 'أخذ استراحة إلزامية في الظل لمدة 15 دقيقة كل ساعة.'
+                    : locale === 'ar' && action.includes('Drink 250ml')
                     ? 'شرب 250 مل من الماء البارد أو محلول الأملاح كل 15-20 دقيقة.'
+                    : locale === 'ar' && action.includes('Loosen non-essential')
+                    ? 'تخفيف معدات الوقاية الثقيلة غير الضرورية في منطقة الظل الآمنة.'
                     : action}
                 </span>
               </li>

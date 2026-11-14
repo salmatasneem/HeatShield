@@ -7,7 +7,6 @@ import {
 import { RiskCard } from './RiskCard';
 import { MultilingualAlert } from './MultilingualAlert';
 import {
-  GlassWater,
   Clock,
   HeartHandshake,
   AlertOctagon,
@@ -19,6 +18,8 @@ import {
 } from 'lucide-react';
 import { AppLocale, UI_TRANSLATIONS } from '../utils/i18n';
 import { BilingualResultsAudioCard } from './BilingualResultsAudioCard';
+import { FlyingCard } from './FlyingCard';
+import { HydrationTrackerWidget } from './HydrationTrackerWidget';
 
 interface WorkerViewProps {
   evaluation: RiskEvaluation;
@@ -33,6 +34,13 @@ interface WorkerViewProps {
   isAiLoading: boolean;
   locale?: AppLocale;
   onOpenVoiceQa: () => void;
+  waterMl: number;
+  electrolytesCount: number;
+  hydrationStreak: number;
+  goalStreakDays?: number;
+  lastHydrationTime: string | null;
+  onLogDrink: (ml: number, isElectrolyte?: boolean, wasOnSchedule?: boolean) => void;
+  onUndoDrink: (ml: number) => void;
 }
 
 export const WorkerView: React.FC<WorkerViewProps> = ({
@@ -48,6 +56,13 @@ export const WorkerView: React.FC<WorkerViewProps> = ({
   isAiLoading,
   locale = 'en',
   onOpenVoiceQa,
+  waterMl,
+  electrolytesCount,
+  hydrationStreak,
+  goalStreakDays = 4,
+  lastHydrationTime,
+  onLogDrink,
+  onUndoDrink,
 }) => {
   const t = UI_TRANSLATIONS[locale];
 
@@ -70,8 +85,7 @@ export const WorkerView: React.FC<WorkerViewProps> = ({
     },
   ];
 
-  // Hydration tracker state
-  const [cupsLogged, setCupsLogged] = useState(3);
+  // Break timer & modals state
   const [breakTimerSeconds, setBreakTimerSeconds] = useState(18 * 60);
   const [showSosModal, setShowSosModal] = useState(false);
   const [showDataLedger, setShowDataLedger] = useState(false);
@@ -101,71 +115,52 @@ export const WorkerView: React.FC<WorkerViewProps> = ({
   return (
     <div className="space-y-6">
       {/* 1. Primary Risk Card */}
-      <RiskCard evaluation={evaluation} onOpenWhyAlert={onOpenWhyAlert} locale={locale} />
+      <FlyingCard direction="scale" delay={0} onScrollReveal={false}>
+        <RiskCard evaluation={evaluation} onOpenWhyAlert={onOpenWhyAlert} locale={locale} />
+      </FlyingCard>
 
       {/* 2. Accessible Bilingual Results Read & Audio Player */}
-      <BilingualResultsAudioCard
-        evaluation={evaluation}
-        advice={advice}
-        locale={locale}
-        onOpenVoiceQa={onOpenVoiceQa}
-      />
+      <FlyingCard direction="left" delay={0.06} onScrollReveal={false}>
+        <BilingualResultsAudioCard
+          evaluation={evaluation}
+          advice={advice}
+          locale={locale}
+          onOpenVoiceQa={onOpenVoiceQa}
+        />
+      </FlyingCard>
 
       {/* 3. Multilingual Alert advisory with voice read-out */}
-      <MultilingualAlert
-        advice={advice}
-        currentLang={currentLang}
-        onChangeLanguage={onChangeLanguage}
-        isAiLoading={isAiLoading}
-        locale={locale}
-      />
+      <FlyingCard direction="right" delay={0.12}>
+        <MultilingualAlert
+          advice={advice}
+          currentLang={currentLang}
+          onChangeLanguage={onChangeLanguage}
+          isAiLoading={isAiLoading}
+          locale={locale}
+        />
+      </FlyingCard>
 
-      {/* 3. Hydration & Rest Break Guidance */}
+      {/* 3. Interactive Hydration & Rest Break Guidance */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Hydration Tracker */}
-        <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 shadow-xs hover:shadow-md transition-shadow">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center space-x-2.5 rtl:space-x-reverse">
-              <div className="p-2.5 rounded-xl bg-[#edf4f0] text-[#173829]">
-                <GlassWater className="w-5 h-5 text-[#173829]" />
-              </div>
-              <div>
-                <h3 className="font-bold text-sm text-[#173829]">{t.worker.hydrationTitle}</h3>
-                <p className="text-xs text-[#426050]">{t.worker.hydrationTarget}</p>
-              </div>
-            </div>
-            <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-full bg-[#edf4f0] text-[#173829] border border-[#c3d9cd]">
-              {cupsLogged} / 8 {t.worker.cupsLogged}
-            </span>
-          </div>
-
-          {/* Hydration visual indicators */}
-          <div className="flex items-center space-x-2 rtl:space-x-reverse my-4">
-            {[...Array(8)].map((_, i) => (
-              <div
-                key={i}
-                className={`flex-1 h-3 rounded-full transition-all ${
-                  i < cupsLogged ? 'bg-[#173829] shadow-xs' : 'bg-[#eae4d5]'
-                }`}
-              />
-            ))}
-          </div>
-
-          <div className="flex items-center justify-between mt-4 pt-3 border-t border-[#ece6da]">
-            <span className="text-xs text-[#426050]">
-              {t.worker.totalLogged}: <strong className="text-[#173829] font-mono text-sm">{cupsLogged * 250}</strong> {locale === 'ar' ? 'مل' : 'ml'}
-            </span>
-            <button
-              onClick={() => setCupsLogged((c) => Math.min(12, c + 1))}
-              className="px-4 py-2 rounded-xl bg-[#173829] hover:bg-[#24533d] text-[#f7f5ee] font-bold text-xs transition-colors shadow-xs"
-            >
-              + {t.worker.addCup}
-            </button>
-          </div>
-        </div>
+        {/* Risk-Adaptive Interactive Hydration Tracker */}
+        <FlyingCard direction="left" delay={0.05} hoverLift>
+          <HydrationTrackerWidget
+            evaluation={evaluation}
+            role="worker"
+            locale={locale}
+            waterMl={waterMl}
+            electrolytesCount={electrolytesCount}
+            hydrationStreak={hydrationStreak}
+            goalStreakDays={goalStreakDays}
+            lastLoggedTime={lastHydrationTime}
+            onLogDrink={onLogDrink}
+            onUndoDrink={onUndoDrink}
+          />
+        </FlyingCard>
 
         {/* Work / Rest Ratio & Countdown Timer */}
-        <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 shadow-xs hover:shadow-md transition-shadow">
+        <FlyingCard direction="right" delay={0.12} hoverLift>
+          <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 shadow-xs hover:shadow-md transition-shadow h-full">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center space-x-2.5 rtl:space-x-reverse">
               <div className="p-2.5 rounded-xl bg-[#edf4f0] text-[#173829]">
@@ -203,13 +198,15 @@ export const WorkerView: React.FC<WorkerViewProps> = ({
               ? 'موصى به بموجب معايير السلامة المهنية بدبي: الاستراحة في خيمة مظللة ومكيفة مع تهوية ميكانيكية.'
               : 'ISO 7243 compliance: Cooling breaks must be taken in mechanically air-conditioned or shaded welfare units.'}
           </div>
-        </div>
+          </div>
+        </FlyingCard>
       </div>
 
       {/* 4. Innovation 2: "Check In on a Teammate" (Buddy Check) & Innovation 4: Acclimatization Status */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Buddy System Card */}
-        <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 shadow-xs hover:shadow-md transition-shadow">
+        <FlyingCard direction="left" delay={0.05} hoverLift>
+          <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 shadow-xs hover:shadow-md transition-shadow h-full">
           <div className="flex items-center space-x-2.5 rtl:space-x-reverse mb-3">
             <div className="p-2.5 rounded-xl bg-[#edf4f0] text-[#173829]">
               <HeartHandshake className="w-5 h-5 text-[#173829]" />
@@ -267,10 +264,12 @@ export const WorkerView: React.FC<WorkerViewProps> = ({
                 : t.worker.checkBuddyButton}
             </span>
           </button>
-        </div>
+          </div>
+        </FlyingCard>
 
         {/* Acclimatization & New Worker Protection Card */}
-        <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 shadow-xs hover:shadow-md transition-shadow">
+        <FlyingCard direction="right" delay={0.12} hoverLift>
+          <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 shadow-xs hover:shadow-md transition-shadow h-full">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center space-x-2.5 rtl:space-x-reverse">
               <div className="p-2.5 rounded-xl bg-[#edf4f0] text-[#173829]">
@@ -317,11 +316,13 @@ export const WorkerView: React.FC<WorkerViewProps> = ({
             />
             <span>{t.worker.toggleNewWorker}</span>
           </label>
-        </div>
+          </div>
+        </FlyingCard>
       </div>
 
       {/* 5. Innovation 3: Self-Report Early Heat Strain Symptoms */}
-      <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 shadow-xs hover:shadow-md transition-shadow">
+      <FlyingCard direction="bottom" delay={0.06}>
+        <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 shadow-xs hover:shadow-md transition-shadow">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 pb-3 border-b border-[#ece6da]">
           <div>
             <div className="flex items-center space-x-2 rtl:space-x-reverse">
@@ -391,21 +392,24 @@ export const WorkerView: React.FC<WorkerViewProps> = ({
             </button>
           </div>
         )}
-      </div>
+        </div>
+      </FlyingCard>
 
       {/* 6. Privacy & Data Ledger Link */}
-      <div className="flex items-center justify-between p-4 rounded-2xl bg-white border border-[#e5dfd3] shadow-xs">
-        <div className="flex items-center space-x-2 rtl:space-x-reverse text-xs text-[#426050]">
-          <Lock className="w-4 h-4 text-[#173829]" />
-          <span>{t.worker.privacyLedgerText}</span>
+      <FlyingCard direction="scale" delay={0.05}>
+        <div className="flex items-center justify-between p-4 rounded-2xl bg-white border border-[#e5dfd3] shadow-xs">
+          <div className="flex items-center space-x-2 rtl:space-x-reverse text-xs text-[#426050]">
+            <Lock className="w-4 h-4 text-[#173829]" />
+            <span>{t.worker.privacyLedgerText}</span>
+          </div>
+          <button
+            onClick={() => setShowDataLedger(true)}
+            className="text-xs text-[#173829] underline hover:text-[#24533d] font-bold"
+          >
+            {t.worker.viewDataLedger}
+          </button>
         </div>
-        <button
-          onClick={() => setShowDataLedger(true)}
-          className="text-xs text-[#173829] underline hover:text-[#24533d] font-bold"
-        >
-          {t.worker.viewDataLedger}
-        </button>
-      </div>
+      </FlyingCard>
 
       {/* SOS / On-Site Medic Dispatch Modal */}
       {showSosModal && (

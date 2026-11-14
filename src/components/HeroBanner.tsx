@@ -1,4 +1,5 @@
 import React from 'react';
+import { motion, useReducedMotion } from 'motion/react';
 import { Role } from '../types';
 import { AppLocale, UI_TRANSLATIONS } from '../utils/i18n';
 import { DubaiSkyline } from './DubaiSkyline';
@@ -27,9 +28,15 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
   onSetLocale,
 }) => {
   const t = UI_TRANSLATIONS[locale];
+  const prefersReducedMotion = useReducedMotion();
 
   return (
-    <section className="relative overflow-hidden mb-8 rounded-3xl bg-gradient-to-b from-[#EBF5F0] via-[#F4F9F6] to-[#FAF8F3] border border-[#DCEBE2] shadow-sm">
+    <motion.section
+      initial={prefersReducedMotion ? false : { opacity: 0, y: 24, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ type: 'spring', stiffness: 170, damping: 20 }}
+      className="relative overflow-hidden mb-8 rounded-3xl bg-gradient-to-b from-[#EBF5F0] via-[#F4F9F6] to-[#FAF8F3] border border-[#DCEBE2] shadow-sm will-change-transform"
+    >
       {/* Decorative ambient pastel background circles */}
       <div className="absolute top-0 right-0 w-96 h-96 bg-[#D8ECE1]/40 rounded-full blur-3xl -z-0 pointer-events-none" />
       <div className="absolute bottom-0 left-0 w-80 h-80 bg-[#FEF7DA]/50 rounded-full blur-2xl -z-0 pointer-events-none" />
@@ -101,7 +108,12 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
         {/* Hero Main Grid: Text & Arabic Calligraphy left, 3D Images right */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
           {/* Left / Content side */}
-          <div className="lg:col-span-7 space-y-4">
+          <motion.div
+            initial={prefersReducedMotion ? false : { opacity: 0, x: locale === 'ar' ? 50 : -50, y: 12 }}
+            animate={{ opacity: 1, x: 0, y: 0 }}
+            transition={{ type: 'spring', stiffness: 175, damping: 20, delay: 0.05 }}
+            className="lg:col-span-7 space-y-4 will-change-transform"
+          >
             <div className="space-y-1">
               <h1 className="font-arabic-calligraphy text-3xl sm:text-4xl lg:text-5xl font-black text-[#173829] tracking-tight leading-tight">
                 دِرْعُ الحَرَارَةِ
@@ -161,14 +173,20 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
                 </button>
               </div>
             </div>
-          </div>
+          </motion.div>
 
           {/* Right / Visual side: 3D Images Showcase (Worker + Phone Mockup) */}
           <div className="lg:col-span-5 relative flex items-center justify-center">
             {/* Ambient pastel glow card container */}
             <div className="relative w-full max-w-md flex items-center justify-center gap-3">
               {/* 3D Dubai Worker Character */}
-              <div className="relative z-10 w-44 sm:w-52 aspect-square rounded-3xl overflow-hidden shadow-xl border-4 border-white bg-white">
+              <motion.div
+                initial={prefersReducedMotion ? false : { opacity: 0, x: 75, y: 24, rotate: -8, scale: 0.85 }}
+                animate={{ opacity: 1, x: 0, y: 0, rotate: 0, scale: 1 }}
+                whileHover={prefersReducedMotion ? undefined : { y: -6, rotate: -2 }}
+                transition={{ type: 'spring', stiffness: 175, damping: 18, delay: 0.1 }}
+                className="relative z-10 w-44 sm:w-52 aspect-square rounded-3xl overflow-hidden shadow-xl border-4 border-white bg-white will-change-transform"
+              >
                 <img
                   src="/assets/images/dubai_worker_3d_1794411980911.jpg"
                   alt="Dubai Safety Engineer with Tablet"
@@ -177,10 +195,16 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
                 <div className="absolute bottom-2 left-2 right-2 bg-[#173829]/90 backdrop-blur-xs text-[#FAF8F3] px-2.5 py-1 rounded-xl text-[10px] font-bold text-center">
                   {locale === 'ar' ? 'مهندس السلامة الميداني' : 'HSE Site Engineer'}
                 </div>
-              </div>
+              </motion.div>
 
               {/* Modern Phone App Mockup */}
-              <div className="relative z-20 w-36 sm:w-44 aspect-square -ml-6 sm:-ml-8 -mt-6 rounded-3xl overflow-hidden shadow-2xl border-4 border-white bg-white hover:scale-105 transition-transform duration-300">
+              <motion.div
+                initial={prefersReducedMotion ? false : { opacity: 0, x: 110, y: -32, rotate: 10, scale: 0.82 }}
+                animate={{ opacity: 1, x: 0, y: 0, rotate: 0, scale: 1 }}
+                whileHover={prefersReducedMotion ? undefined : { y: -8, scale: 1.05, rotate: 2 }}
+                transition={{ type: 'spring', stiffness: 180, damping: 17, delay: 0.18 }}
+                className="relative z-20 w-36 sm:w-44 aspect-square -ml-6 sm:-ml-8 -mt-6 rounded-3xl overflow-hidden shadow-2xl border-4 border-white bg-white will-change-transform"
+              >
                 <img
                   src="/assets/images/dubai_phone_mockup_1794411996277.jpg"
                   alt="HeatShield Mobile App Screen"
@@ -189,7 +213,7 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
                 <div className="absolute top-2 right-2 bg-[#C81D25] text-white px-2 py-0.5 rounded-full text-[9px] font-extrabold uppercase shadow-sm animate-pulse">
                   LIVE WBGT
                 </div>
-              </div>
+              </motion.div>
             </div>
           </div>
         </div>
@@ -209,57 +233,62 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
           <DubaiSkyline fillColor="#173829" accentColor="#2D5E46" height={70} />
         </div>
 
-        {/* Metric Counters Strip in Soft Pastel Pills (like Campty / Dribbble mockup) */}
+        {/* Metric Counters Strip */}
         <div className="mt-5 grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div className="bg-white/90 backdrop-blur-xs p-3.5 rounded-2xl border border-[#D5E5DC] shadow-xs flex items-center space-x-3 rtl:space-x-reverse">
-            <div className="p-2.5 rounded-xl bg-[#EBF5F0] text-[#173829]">
-              <ShieldCheck className="w-5 h-5 text-[#173829]" />
-            </div>
-            <div>
-              <div className="text-xl font-black text-[#173829] font-mono">0</div>
-              <div className="text-[10px] font-bold text-[#4A6857]">
-                {locale === 'ar' ? 'إصابات حرجة في 2026' : 'Heat Incidents'}
+          {[
+            {
+              icon: <ShieldCheck className="w-5 h-5 text-[#173829]" />,
+              val: '0',
+              label: locale === 'ar' ? 'إصابات حرجة في 2026' : 'Heat Incidents',
+              initial: { x: -45, y: 24, rotate: -4 },
+            },
+            {
+              icon: <MapPin className="w-5 h-5 text-[#173829]" />,
+              val: '6',
+              label: locale === 'ar' ? 'محطات استراحة مكيفة' : 'Cooling Sanctuaries',
+              initial: { x: -16, y: 36, rotate: -2 },
+            },
+            {
+              icon: <HeartHandshake className="w-5 h-5 text-[#173829]" />,
+              val: '96%',
+              label: locale === 'ar' ? 'التزام بفترات الراحة' : 'Rest Adherence',
+              initial: { x: 16, y: 36, rotate: 2 },
+            },
+            {
+              icon: <Award className="w-5 h-5 text-[#173829]" />,
+              val: '100%',
+              label: locale === 'ar' ? 'امتثال لقرار حظر الظهيرة' : 'MoHRE Midday Ban',
+              initial: { x: 45, y: 24, rotate: 4 },
+            },
+          ].map((item, idx) => (
+            <motion.div
+              key={item.label}
+              initial={
+                prefersReducedMotion
+                  ? false
+                  : { opacity: 0, ...item.initial, scale: 0.9 }
+              }
+              animate={{ opacity: 1, x: 0, y: 0, rotate: 0, scale: 1 }}
+              whileHover={prefersReducedMotion ? undefined : { y: -4, scale: 1.02 }}
+              transition={{
+                type: 'spring',
+                stiffness: 185,
+                damping: 19,
+                delay: 0.14 + idx * 0.06,
+              }}
+              className="bg-white/90 backdrop-blur-xs p-3.5 rounded-2xl border border-[#D5E5DC] shadow-xs flex items-center space-x-3 rtl:space-x-reverse will-change-transform"
+            >
+              <div className="p-2.5 rounded-xl bg-[#EBF5F0] text-[#173829]">
+                {item.icon}
               </div>
-            </div>
-          </div>
-
-          <div className="bg-white/90 backdrop-blur-xs p-3.5 rounded-2xl border border-[#D5E5DC] shadow-xs flex items-center space-x-3 rtl:space-x-reverse">
-            <div className="p-2.5 rounded-xl bg-[#EBF5F0] text-[#173829]">
-              <MapPin className="w-5 h-5 text-[#173829]" />
-            </div>
-            <div>
-              <div className="text-xl font-black text-[#173829] font-mono">6</div>
-              <div className="text-[10px] font-bold text-[#4A6857]">
-                {locale === 'ar' ? 'محطات استراحة مكيفة' : 'Cooling Sanctuaries'}
+              <div>
+                <div className="text-xl font-black text-[#173829] font-mono tabular-nums">{item.val}</div>
+                <div className="text-[10px] font-bold text-[#4A6857]">{item.label}</div>
               </div>
-            </div>
-          </div>
-
-          <div className="bg-white/90 backdrop-blur-xs p-3.5 rounded-2xl border border-[#D5E5DC] shadow-xs flex items-center space-x-3 rtl:space-x-reverse">
-            <div className="p-2.5 rounded-xl bg-[#EBF5F0] text-[#173829]">
-              <HeartHandshake className="w-5 h-5 text-[#173829]" />
-            </div>
-            <div>
-              <div className="text-xl font-black text-[#173829] font-mono">96%</div>
-              <div className="text-[10px] font-bold text-[#4A6857]">
-                {locale === 'ar' ? 'التزام بفترات الراحة' : 'Rest Adherence'}
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white/90 backdrop-blur-xs p-3.5 rounded-2xl border border-[#D5E5DC] shadow-xs flex items-center space-x-3 rtl:space-x-reverse">
-            <div className="p-2.5 rounded-xl bg-[#EBF5F0] text-[#173829]">
-              <Award className="w-5 h-5 text-[#173829]" />
-            </div>
-            <div>
-              <div className="text-xl font-black text-[#173829] font-mono">100%</div>
-              <div className="text-[10px] font-bold text-[#4A6857]">
-                {locale === 'ar' ? 'امتثال لقرار حظر الظهيرة' : 'MoHRE Midday Ban'}
-              </div>
-            </div>
-          </div>
+            </motion.div>
+          ))}
         </div>
       </div>
-    </section>
+    </motion.section>
   );
 };

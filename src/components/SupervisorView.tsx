@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   RiskEvaluation,
   SmartShiftPlan,
@@ -9,7 +9,6 @@ import { DEMO_CREWS } from '../data/mockData';
 import { evaluateHeatRisk } from '../utils/riskEngine';
 import {
   Users,
-  ShieldCheck,
   Calendar,
   Sparkles,
   Heart,
@@ -18,13 +17,14 @@ import {
   ThumbsUp,
   ThumbsDown,
   CheckCircle,
-  ThermometerSnowflake,
   AlertTriangle,
-  Mic,
+  MapPin,
 } from 'lucide-react';
 import { AppLocale, UI_TRANSLATIONS } from '../utils/i18n';
 import { DubaiHeatmap } from './DubaiHeatmap';
 import { BilingualResultsAudioCard } from './BilingualResultsAudioCard';
+import { FlyingCard } from './FlyingCard';
+import { motion, useReducedMotion } from 'motion/react';
 
 interface SupervisorViewProps {
   evaluation: RiskEvaluation;
@@ -32,7 +32,7 @@ interface SupervisorViewProps {
   feedbackState: AlertFeedbackState;
   onRecordFeedback: (type: 'useful' | 'false_alarm') => void;
   smartShiftPlan: SmartShiftPlan | null;
-  onRequestPlan: () => void;
+  onRequestPlan: (districtName?: string) => void;
   isPlanLoading: boolean;
   historyWbgt: Array<{ time: string; wbgt: number }>;
   locale?: AppLocale;
@@ -72,7 +72,10 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({
   onOpenVoiceQa,
 }) => {
   const t = UI_TRANSLATIONS[locale];
+  const prefersReducedMotion = useReducedMotion();
   const [showWearableData, setShowWearableData] = useState(false);
+  const [plannedDistrict, setPlannedDistrict] = useState<{ name: string; label: string } | null>(null);
+  const smartShiftRef = useRef<HTMLDivElement | null>(null);
 
   // Compute live risk status for each of the 3 crews
   const crewsWithLiveStatus = DEMO_CREWS.map((crew) => {
@@ -141,7 +144,8 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({
   return (
     <div className="space-y-6">
       {/* 1. Top Summary Banner for Site Coordinator */}
-      <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 sm:p-6 shadow-xs hover:shadow-md transition-shadow">
+      <FlyingCard direction="scale" delay={0} onScrollReveal={false}>
+        <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 sm:p-6 shadow-xs hover:shadow-md transition-shadow">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="flex items-center space-x-3 rtl:space-x-reverse">
             <div className="p-3 rounded-2xl bg-[#edf4f0] text-[#173829]">
@@ -203,23 +207,39 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({
             </div>
           </div>
         )}
-      </div>
+        </div>
+      </FlyingCard>
 
       {/* Accessible Bilingual Results Read & Audio Player for Supervisors */}
       {advice && (
-        <BilingualResultsAudioCard
-          evaluation={evaluation}
-          advice={advice}
-          locale={locale}
-          onOpenVoiceQa={onOpenVoiceQa || (() => {})}
-        />
+        <FlyingCard direction="left" delay={0.06} onScrollReveal={false}>
+          <BilingualResultsAudioCard
+            evaluation={evaluation}
+            advice={advice}
+            locale={locale}
+            onOpenVoiceQa={onOpenVoiceQa || (() => {})}
+          />
+        </FlyingCard>
       )}
 
       {/* 2. Dubai District Heat Zones Heatmap (Interactive Geospatial Planning) */}
-      <DubaiHeatmap locale={locale} />
+      <FlyingCard direction="right" delay={0.1}>
+        <DubaiHeatmap
+          locale={locale}
+          onSelectDistrictForPlanning={(district) => {
+            setPlannedDistrict({
+              name: district.name,
+              label: locale === 'ar' ? district.nameAr : district.name,
+            });
+            onRequestPlan(district.name);
+            smartShiftRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
+        />
+      </FlyingCard>
 
       {/* 3. Three Site Crews Real-Time Status Table */}
-      <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 sm:p-6 shadow-xs hover:shadow-md transition-shadow space-y-4">
+      <FlyingCard direction="bottom" delay={0.05}>
+        <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 sm:p-6 shadow-xs hover:shadow-md transition-shadow space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="font-extrabold text-sm text-[#173829] uppercase tracking-wider flex items-center space-x-2 rtl:space-x-reverse">
             <span className="w-2 h-2 rounded-full bg-[#173829]" />
@@ -234,14 +254,25 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {crewsWithLiveStatus.map((crew) => {
+          {crewsWithLiveStatus.map((crew, idx) => {
             const isHighOrCritical =
               crew.liveEvaluation.riskLevel === 'High' || crew.liveEvaluation.riskLevel === 'Critical';
+            const crewFly =
+              idx === 0
+                ? { x: -50, y: 24, rotate: -3 }
+                : idx === 1
+                ? { x: 0, y: 42, rotate: 0 }
+                : { x: 50, y: 24, rotate: 3 };
 
             return (
-              <div
+              <motion.div
                 key={crew.id}
-                className={`p-4 rounded-xl border transition-all flex flex-col justify-between ${
+                initial={prefersReducedMotion ? false : { opacity: 0, ...crewFly, scale: 0.92 }}
+                whileInView={{ opacity: 1, x: 0, y: 0, rotate: 0, scale: 1 }}
+                viewport={{ once: true, amount: 0.12 }}
+                whileHover={prefersReducedMotion ? undefined : { y: -5, scale: 1.02 }}
+                transition={{ type: 'spring', stiffness: 190, damping: 19, delay: idx * 0.08 }}
+                className={`p-4 rounded-xl border transition-shadow flex flex-col justify-between will-change-transform ${
                   isHighOrCritical
                     ? 'bg-[#fff5f5] border-[#c81d25]/60 shadow-xs'
                     : 'bg-[#f7f5ee] border-[#e2dcd0] hover:bg-white'
@@ -312,27 +343,38 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({
                     {crew.liveEvaluation.isMiddayBanActive ? 'HALTED' : 'ACTIVE'}
                   </span>
                 </div>
-              </div>
+              </motion.div>
             );
           })}
         </div>
-      </div>
+        </div>
+      </FlyingCard>
 
-      {/* 3. SmartShift AI Re-Allocation Planner */}
-      <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 sm:p-6 shadow-xs hover:shadow-md transition-shadow space-y-4">
+      {/* 3. SmartShift Re-Allocation Planner */}
+      <FlyingCard direction="scale" delay={0.06}>
+        <div
+          ref={smartShiftRef}
+          className="bg-white border border-[#e5dfd3] rounded-2xl p-5 sm:p-6 shadow-xs hover:shadow-md transition-shadow space-y-4 scroll-mt-20"
+        >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#ece6da]">
           <div className="flex items-center space-x-2.5 rtl:space-x-reverse">
             <div className="p-2.5 rounded-xl bg-[#edf4f0] text-[#173829]">
               <Sparkles className="w-5 h-5 text-[#173829]" />
             </div>
             <div>
-              <div className="flex items-center space-x-2 rtl:space-x-reverse">
+              <div className="flex items-center flex-wrap gap-2">
                 <h3 className="font-extrabold text-base text-[#173829]">
                   {t.supervisor.smartShiftTitle}
                 </h3>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#edf4f0] text-[#173829] border border-[#c3d9cd]">
                   {t.supervisor.smartShiftBadge}
                 </span>
+                {plannedDistrict && (
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#173829] text-[#FAF8F3] flex items-center space-x-1 rtl:space-x-reverse">
+                    <MapPin className="w-3 h-3" />
+                    <span>{plannedDistrict.label}</span>
+                  </span>
+                )}
               </div>
               <p className="text-xs text-[#426050] mt-0.5">
                 {t.supervisor.smartShiftSubtitle}
@@ -341,7 +383,7 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({
           </div>
 
           <button
-            onClick={onRequestPlan}
+            onClick={() => onRequestPlan(plannedDistrict?.name)}
             disabled={isPlanLoading}
             className="flex items-center space-x-1.5 rtl:space-x-reverse px-4 py-2 rounded-xl bg-[#173829] hover:bg-[#24533d] text-[#f7f5ee] text-xs font-bold transition-all shadow-xs disabled:opacity-50"
           >
@@ -359,51 +401,93 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({
                 <span>{t.supervisor.shiftTimelineTitle} (06:00 - 18:00 Dubai Time)</span>
               </h4>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 mt-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 mt-3">
                 {smartShiftPlan.timeline?.map((slot, idx) => {
                   const slotTime = slot.timeSlot || slot.hours || '';
                   const slotTitle = slot.label || slot.activity || 'Site Shift Window';
-                  const slotDesc = slot.coolingProtocol || slot.zone || (slot.crewActions ? Object.values(slot.crewActions).join(' • ') : '');
-                  const isMiddaySlot = slot.isMiddayBan || slotTime.includes('12:00') || slotTime.includes('12:30') || slotTime.includes('13:00') || slotTime.includes('14:00');
+                  const slotProtocol = slot.coolingProtocol || slot.zone || '';
+                  const isMiddaySlot =
+                    slot.isMiddayBan ||
+                    slotTime.includes('12:00') ||
+                    slotTime.includes('12:30') ||
+                    slotTime.includes('13:00') ||
+                    slotTime.includes('14:00');
                   return (
-                    <div
+                    <motion.div
                       key={idx}
-                      className={`p-3 rounded-xl border text-xs ${
+                      initial={prefersReducedMotion ? false : { opacity: 0, y: 26, scale: 0.9 }}
+                      whileInView={{ opacity: 1, y: 0, scale: 1 }}
+                      viewport={{ once: true, amount: 0.1 }}
+                      whileHover={prefersReducedMotion ? undefined : { y: -4, scale: 1.02 }}
+                      transition={{ type: 'spring', stiffness: 205, damping: 20, delay: idx * 0.05 }}
+                      className={`p-3 rounded-xl border text-xs flex flex-col justify-between space-y-2 will-change-transform ${
                         isMiddaySlot
                           ? 'bg-[#fee2e2] border-[#fca5a5] text-[#991b1b]'
                           : 'bg-white border-[#e2dcd0] text-[#173829]'
                       }`}
                     >
-                      <div className="font-mono font-bold text-xs mb-1 flex items-center justify-between">
-                        <span>{slotTime}</span>
-                        {isMiddaySlot && (
-                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#c81d25] text-white font-sans uppercase">
-                            Midday Stop
-                          </span>
+                      <div>
+                        <div className="font-mono font-bold text-xs mb-1 flex items-center justify-between gap-1">
+                          <span>{slotTime}</span>
+                          {isMiddaySlot && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#c81d25] text-white font-sans uppercase shrink-0">
+                              Midday Stop
+                            </span>
+                          )}
+                        </div>
+                        <div className="font-bold text-xs text-[#173829]">{slotTitle}</div>
+                        {slotProtocol && (
+                          <div className="text-[11px] text-[#426050] mt-1">{slotProtocol}</div>
+                        )}
+
+                        {slot.crewActions && Object.keys(slot.crewActions).length > 0 && (
+                          <div className="mt-2 pt-2 border-t border-[#ece6da] space-y-1 text-[10px]">
+                            {Object.entries(slot.crewActions).map(([crewKey, actionVal]) => (
+                              <div key={crewKey} className="leading-snug">
+                                <strong className="font-bold">{crewKey}:</strong>{' '}
+                                <span className={isMiddaySlot ? 'text-[#7f1d1d]' : 'text-[#426050]'}>
+                                  {actionVal}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
                         )}
                       </div>
-                      <div className="font-bold text-xs text-[#173829]">{slotTitle}</div>
-                      <div className="text-[11px] text-[#426050] mt-1">{slotDesc}</div>
+
                       {slot.risk && (
-                        <div className="mt-2 text-[10px] font-mono text-[#24533d]">
+                        <div className="pt-1 text-[10px] font-mono font-semibold text-[#24533d]">
                           Risk: {slot.risk}
                         </div>
                       )}
-                    </div>
+                    </motion.div>
                   );
                 })}
               </div>
             </div>
 
-            <div className="p-4 rounded-xl bg-[#edf4f0] border border-[#c3d9cd] text-xs text-[#173829] leading-relaxed">
-              <strong className="font-bold">{t.supervisor.optimizationRationale}:</strong> {smartShiftPlan.rationale}
+            <div className="p-4 rounded-xl bg-[#edf4f0] border border-[#c3d9cd] text-xs text-[#173829] leading-relaxed space-y-2">
+              <div>
+                <strong className="font-bold">{t.supervisor.optimizationRationale}:</strong> {smartShiftPlan.rationale}
+              </div>
+              {smartShiftPlan.adherenceNotes && smartShiftPlan.adherenceNotes.length > 0 && (
+                <ul className="pt-2 border-t border-[#c3d9cd] space-y-1 text-[11px] text-[#24533d]">
+                  {smartShiftPlan.adherenceNotes.map((note, idx) => (
+                    <li key={idx} className="flex items-start space-x-1.5 rtl:space-x-reverse">
+                      <CheckCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <span>{note}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         )}
-      </div>
+        </div>
+      </FlyingCard>
 
       {/* 4. 5-Minute Rolling WBGT Trend Chart */}
-      <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 sm:p-6 shadow-xs hover:shadow-md transition-shadow space-y-3">
+      <FlyingCard direction="left" delay={0.06}>
+        <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 sm:p-6 shadow-xs hover:shadow-md transition-shadow space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2 rtl:space-x-reverse">
             <TrendingUp className="w-4 h-4 text-[#173829]" />
@@ -435,10 +519,12 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({
             );
           })}
         </div>
-      </div>
+        </div>
+      </FlyingCard>
 
       {/* 5. Alert Feedback Loop & Adherence Metrics */}
-      <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 sm:p-6 shadow-xs hover:shadow-md transition-shadow space-y-4">
+      <FlyingCard direction="right" delay={0.08}>
+        <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 sm:p-6 shadow-xs hover:shadow-md transition-shadow space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#ece6da]">
           <div>
             <h3 className="font-extrabold text-sm text-[#173829]">{t.supervisor.feedbackTitle}</h3>
@@ -494,7 +580,8 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({
             </div>
           </div>
         </div>
-      </div>
+        </div>
+      </FlyingCard>
     </div>
   );
 };

@@ -130,7 +130,7 @@ export const DemoControlsDrawer: React.FC<DemoControlsDrawerProps> = ({
                   onChange={(e) => onToggleLiveMode(e.target.checked)}
                   className="sr-only peer"
                 />
-                <div className="w-11 h-6 bg-[#E2DCD0] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-[#DDD4C3] after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#173829]"></div>
+                <div className="w-11 h-6 bg-[#E2DCD0] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] rtl:after:left-auto rtl:after:right-[2px] after:bg-white after:border-[#DDD4C3] after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#173829]"></div>
               </label>
             </div>
 
@@ -277,7 +277,7 @@ export const DemoControlsDrawer: React.FC<DemoControlsDrawerProps> = ({
                 {isAr ? 'مستوى المجهود البدني' : 'Metabolic Workload'}
               </label>
               <div className="grid grid-cols-4 gap-1.5">
-                {(['Rest', 'Light', 'Moderate', 'Heavy'] as WorkloadLevel[]).map((w) => (
+                {(['Light', 'Moderate', 'Heavy', 'Very heavy'] as WorkloadLevel[]).map((w) => (
                   <button
                     key={w}
                     onClick={() => onWorkloadChange(w)}

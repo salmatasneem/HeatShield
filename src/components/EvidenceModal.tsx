@@ -91,7 +91,11 @@ export const EvidenceModal: React.FC<EvidenceModalProps> = ({
             }`}
           >
             <BookOpen className="w-3.5 h-3.5" />
-            <span>{isAr ? 'الأوراق العلمية (3 دراسات خليجية)' : 'Evidence & Citations (3)'}</span>
+            <span>
+              {isAr
+                ? `الأوراق العلمية (${EVIDENCE_CITATIONS.length} دراسات ومراجع)`
+                : `Evidence & Citations (${EVIDENCE_CITATIONS.length})`}
+            </span>
           </button>
 
           <button
