@@ -20,15 +20,26 @@ import { WhyAlertDrawer } from './components/WhyAlertDrawer';
 import { EvidenceModal } from './components/EvidenceModal';
 import { ImpactModal } from './components/ImpactModal';
 import { LandingPage } from './components/LandingPage';
+import { TeamPage } from './components/TeamPage';
 import { VoiceQaModal } from './components/VoiceQaModal';
 import { Footer } from './components/Footer';
 import { HeroBanner } from './components/HeroBanner';
 import { WifiOff, HardHat, Bike, Users, Mic } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 
+function isTeamPath(pathname: string): boolean {
+  const normalized = pathname.replace(/\/+$/, '').toLowerCase();
+  return normalized === '/team' || normalized === '/contact';
+}
+
 export default function App() {
   // Global Interface Locale (English / Dubai Arabic)
   const [locale, setLocale] = useState<AppLocale>('en');
+
+  // Route state for dedicated /team (/contact) page vs landing & workspace
+  const [isTeamPage, setIsTeamPage] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? isTeamPath(window.location.pathname) : false
+  );
 
   // Landing Page first screen -> "Continue as Guest" enters the full workspace
   const [hasEnteredApp, setHasEnteredApp] = useState(false);
@@ -482,11 +493,70 @@ export default function App() {
     });
   };
 
+  useEffect(() => {
+    const handlePopState = () => {
+      setIsTeamPage(isTeamPath(window.location.pathname));
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const handleOpenTeamPage = () => {
+    if (!isTeamPath(window.location.pathname)) {
+      window.history.pushState({}, '', '/team');
+    }
+    setIsTeamPage(true);
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  };
+
+  const handleNavigateHome = () => {
+    if (window.location.pathname !== '/') {
+      window.history.pushState({}, '', '/');
+    }
+    setIsTeamPage(false);
+    setHasEnteredApp(false);
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  };
+
   const handleContinueAsGuest = (role: Role) => {
+    if (isTeamPath(window.location.pathname)) {
+      window.history.pushState({}, '', '/');
+    }
+    setIsTeamPage(false);
     setCurrentRole(role);
     setHasEnteredApp(true);
     window.scrollTo({ top: 0, behavior: 'auto' });
   };
+
+  if (isTeamPage) {
+    return (
+      <>
+        <TeamPage
+          locale={locale}
+          onSetLocale={handleSetLocale}
+          onNavigateHome={handleNavigateHome}
+          onLaunchWorkspace={() => handleContinueAsGuest(currentRole)}
+          onOpenEvidence={() => setIsEvidenceOpen(true)}
+          onOpenImpact={() => setIsImpactOpen(true)}
+        />
+
+        {/* Evidence & Hardware Guide Modal */}
+        <EvidenceModal
+          isOpen={isEvidenceOpen}
+          onClose={() => setIsEvidenceOpen(false)}
+          locale={locale}
+        />
+
+        {/* Impact Metrics & Hypotheses Modal */}
+        <ImpactModal
+          isOpen={isImpactOpen}
+          onClose={() => setIsImpactOpen(false)}
+          feedbackState={feedbackState}
+          locale={locale}
+        />
+      </>
+    );
+  }
 
   if (!hasEnteredApp) {
     return (
@@ -500,6 +570,7 @@ export default function App() {
           onOpenVoiceQa={() => setIsVoiceQaOpen(true)}
           onOpenEvidence={() => setIsEvidenceOpen(true)}
           onOpenImpact={() => setIsImpactOpen(true)}
+          onOpenTeam={handleOpenTeamPage}
         />
 
         {/* Evidence & ESP32 Hardware Guide Modal */}
@@ -564,10 +635,7 @@ export default function App() {
         onOpenEvidence={() => setIsEvidenceOpen(true)}
         onOpenImpact={() => setIsImpactOpen(true)}
         onOpenVoiceQa={() => setIsVoiceQaOpen(true)}
-        onBackToLanding={() => {
-          setHasEnteredApp(false);
-          window.scrollTo({ top: 0, behavior: 'auto' });
-        }}
+        onBackToLanding={handleNavigateHome}
       />
 
       {/* Sensor Fallback Warning Banner */}
@@ -800,6 +868,7 @@ export default function App() {
       <Footer
         onOpenEvidence={() => setIsEvidenceOpen(true)}
         onOpenImpact={() => setIsImpactOpen(true)}
+        onOpenTeam={handleOpenTeamPage}
         locale={locale}
       />
     </div>

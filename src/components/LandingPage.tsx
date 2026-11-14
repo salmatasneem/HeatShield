@@ -40,6 +40,7 @@ interface LandingPageProps {
   onOpenVoiceQa: () => void;
   onOpenEvidence: () => void;
   onOpenImpact: () => void;
+  onOpenTeam: () => void;
 }
 
 interface HeroDeckCard {
@@ -65,6 +66,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   onOpenVoiceQa,
   onOpenEvidence,
   onOpenImpact,
+  onOpenTeam,
 }) => {
   const t = UI_TRANSLATIONS[locale];
   const isAr = locale === 'ar';
@@ -356,6 +358,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               className="hover:text-[#173829] hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
             >
               {isAr ? 'الأدلة العلمية' : 'Evidence'}
+            </a>
+            <a
+              href="/team"
+              onClick={(e) => {
+                e.preventDefault();
+                onOpenTeam();
+              }}
+              className="hover:text-[#173829] hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
+            >
+              {isAr ? 'فريقنا' : 'Our Team'}
             </a>
             <button
               type="button"
@@ -1428,6 +1440,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       <Footer
         onOpenEvidence={onOpenEvidence}
         onOpenImpact={onOpenImpact}
+        onOpenTeam={onOpenTeam}
         locale={locale}
       />
     </div>

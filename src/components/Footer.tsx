@@ -1,17 +1,19 @@
 import React from 'react';
 import { AppLocale, UI_TRANSLATIONS } from '../utils/i18n';
 import { DubaiSkyline } from './DubaiSkyline';
-import { ShieldAlert, BookOpen, TrendingUp, Heart } from 'lucide-react';
+import { ShieldAlert, BookOpen, TrendingUp, Heart, Users } from 'lucide-react';
 
 interface FooterProps {
   onOpenEvidence: () => void;
   onOpenImpact: () => void;
+  onOpenTeam?: () => void;
   locale: AppLocale;
 }
 
 export const Footer: React.FC<FooterProps> = ({
   onOpenEvidence,
   onOpenImpact,
+  onOpenTeam,
   locale,
 }) => {
   const t = UI_TRANSLATIONS[locale];
@@ -63,6 +65,19 @@ export const Footer: React.FC<FooterProps> = ({
                 <TrendingUp className="w-3.5 h-3.5 text-[#173829]" />
                 <span>{t.nav.impact} • Lead Time & Adherence</span>
               </button>
+              {onOpenTeam && (
+                <a
+                  href="/team"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onOpenTeam();
+                  }}
+                  className="text-left rtl:text-right text-[#2D4D3C] hover:text-[#173829] hover:underline flex items-center space-x-1.5 rtl:space-x-reverse"
+                >
+                  <Users className="w-3.5 h-3.5 text-[#173829]" />
+                  <span>{locale === 'ar' ? 'فريقنا والتواصل' : 'Our Team'}</span>
+                </a>
+              )}
               <div className="text-[11px] text-[#6C8D7B]">
                 {locale === 'ar'
                   ? 'متوافق مع قرار وزارة الموارد البشرية والتوطين رقم (44) لسنة 2022'
@@ -71,15 +86,15 @@ export const Footer: React.FC<FooterProps> = ({
             </div>
           </div>
 
-          {/* Hackathon Credentials */}
+          {/* Challenge Credentials */}
           <div className="space-y-2">
             <div className="text-xs font-black uppercase tracking-wider text-[#173829]">
               {locale === 'ar' ? 'الابتكار والتطوير' : 'Innovation & Impact'}
             </div>
             <p className="text-xs text-[#4A6857] leading-relaxed">
               {locale === 'ar'
-                ? 'تم التطوير خصيصاً لمسابقة تحدي صحة المستقبل للابتكار الرقمي 2026. يدعم مستشعرات ESP32 الميدانية ونماذج Gemini AI متقدمة التفكير.'
-                : 'Built for the Future Health Digital Innovation Challenge 2026. Powered by Google AI Studio, multi-model Gemini fallback, and ESP32 IoT micro-climate telemetry.'}
+                ? 'تم التطوير لمسابقة تحدي صحة المستقبل للابتكار الرقمي 2026.'
+                : 'Built for Future Health Digital Innovation Challenge 2026.'}
             </p>
           </div>
         </div>
