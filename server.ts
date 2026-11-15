@@ -2,7 +2,7 @@ import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import dotenv from 'dotenv';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, LiveServerMessage, Modality, ThinkingLevel, Type } from '@google/genai';
 
 dotenv.config();
 
@@ -63,50 +63,67 @@ if (process.env.GEMINI_API_KEY) {
   });
 }
 
-// Resilient helper to call Gemini with automatic fallback: gemini-3.8-flash -> gemini-3.1-flash-lite
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label}_TIMEOUT_${ms}ms`)), ms);
+    promise.then(
+      (val) => {
+        clearTimeout(timer);
+        resolve(val);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+// Resilient helper to call Gemini with low-latency primary and fast fallback
 async function generateContentResilient(params: {
   contents: string;
+  systemInstruction?: string;
   responseSchema?: any;
+  timeoutMs?: number;
+  fast?: boolean;
 }) {
   if (!aiClient) return null;
 
-  // 1. Try primary model: gemini-3.8-flash
-  try {
-    const config: any = { responseMimeType: 'application/json' };
-    if (params.responseSchema) config.responseSchema = params.responseSchema;
+  const timeoutMs = params.timeoutMs ?? 6000;
+  const baseConfig: any = {
+    responseMimeType: 'application/json',
+  };
+  if (params.responseSchema) baseConfig.responseSchema = params.responseSchema;
+  if (params.systemInstruction) baseConfig.systemInstruction = params.systemInstruction;
 
-    const response = await aiClient.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: params.contents,
-      config,
-    });
-    return response.text;
-  } catch (primaryErr: any) {
-    const status = primaryErr?.status || primaryErr?.error?.code || primaryErr?.code;
-    const msg = primaryErr?.message || '';
+  const modelOrder = params.fast
+    ? (['gemini-3.1-flash-lite', 'gemini-4-hydrogen'] as const)
+    : (['gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const);
 
-    // If 503 (high demand) or 429 (rate limit), attempt fallback model gemini-3.1-flash-lite
-    if (status === 503 || status === 'UNAVAILABLE' || msg.includes('high demand') || status === 429) {
-      console.log('Gemini 3.8 Flash experiencing temporary demand spike. Routing to Gemini 3.1 Flash Lite fallback...');
-      try {
-        const config: any = { responseMimeType: 'application/json' };
-        if (params.responseSchema) config.responseSchema = params.responseSchema;
+  for (const model of modelOrder) {
+    try {
+      const config =
+        model === 'gemini-4-hydrogen'
+          ? { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+          : baseConfig;
 
-        const fallbackResponse = await aiClient.models.generateContent({
-          model: 'gemini-3.1-flash-lite',
+      const response = await withTimeout(
+        aiClient.models.generateContent({
+          model,
           contents: params.contents,
           config,
-        });
-        return fallbackResponse.text;
-      } catch (fallbackErr: any) {
-        console.log('Gemini models temporarily at peak capacity, serving pre-verified deterministic rule template.');
-        return null;
-      }
+        }),
+        timeoutMs,
+        `GEMINI_${model}`
+      );
+      if (response.text) return response.text;
+    } catch (err: any) {
+      const msg = err?.message || '';
+      console.log(`Gemini (${model}) notice:`, msg.slice(0, 120));
     }
-
-    console.log('Gemini request notice:', msg.slice(0, 80));
-    return null;
   }
+
+  return null;
 }
 
 // 1. Gemini Heat Risk Explanation & Multilingual Alert endpoint
@@ -371,6 +388,349 @@ Generate JSON with:
   }
 });
 
+// Speech-cleaning & TTS cache helpers for crisp, rapid English & Arabic audio
+interface TtsCacheEntry {
+  audioBase64: string;
+  mimeType: string;
+  source: string;
+  expiresAt: number;
+}
+
+const TTS_CACHE_TTL_MS = 10 * 60 * 1000;
+const TTS_CACHE_MAX = 60;
+const ttsCache = new Map<string, TtsCacheEntry>();
+const ttsInFlight = new Map<string, Promise<{ audioBase64?: string; mimeType?: string; source?: string; fallback?: boolean; error?: string }>>();
+const ttsModelCooldownUntil = new Map<string, number>();
+
+function pcmToWavBase64(pcmBuffers: Buffer[], sampleRate: number = 24000): string {
+  const pcmData = Buffer.concat(pcmBuffers);
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
+  const blockAlign = (numChannels * bitsPerSample) / 8;
+  const header = Buffer.alloc(44);
+
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcmData.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16); // PCM chunk size
+  header.writeUInt16LE(1, 20); // AudioFormat = PCM
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcmData.length, 40);
+
+  return Buffer.concat([header, pcmData]).toString('base64');
+}
+
+async function synthesizeViaGeminiLive(
+  speechText: string,
+  language: 'en' | 'ar'
+): Promise<{ audioBase64: string; mimeType: string; source: string } | null> {
+  const client = aiBetaClient || aiClient;
+  if (!client) return null;
+
+  const blockedUntil = ttsModelCooldownUntil.get('gemini-3.8-live') || 0;
+  if (blockedUntil > Date.now()) return null;
+
+  const voiceName = language === 'ar' ? 'Kore' : 'Puck';
+  const systemInstruction =
+    language === 'ar'
+      ? 'أنت قارئ نصوص صوتية باللغة العربية الفصحى الواضحة. اقرأ النص الذي يرسله المستخدم حرفياً وبنطق عربي سليم وهادئ دون أي إضافات أو تعليقات أو تحية.'
+      : 'You are a precise text-to-speech reader. Read ONLY the exact text provided verbatim in clear natural English without adding commentary or greetings.';
+
+  return new Promise((resolve) => {
+    const pcmChunks: Buffer[] = [];
+    let settled = false;
+    let sessionRef: any = null;
+
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const finish = (result: { audioBase64: string; mimeType: string; source: string } | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (idleTimer) clearTimeout(idleTimer);
+      try {
+        sessionRef?.close?.();
+      } catch {
+        // ignore
+      }
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      if (pcmChunks.length > 0) {
+        finish({
+          audioBase64: pcmToWavBase64(pcmChunks, 24000),
+          mimeType: 'audio/wav',
+          source: 'gemini-3.8-live',
+        });
+      } else {
+        finish(null);
+      }
+    }, 12000);
+
+    client.live
+      .connect({
+        model: 'gemini-3.8-live',
+        config: {
+          responseModalities: [Modality.AUDIO],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName },
+            },
+          },
+          systemInstruction,
+        },
+        callbacks: {
+          onmessage: (message: LiveServerMessage) => {
+            const parts = message.serverContent?.modelTurn?.parts ?? [];
+            let addedAudio = false;
+            for (const part of parts) {
+              if (part.inlineData?.data) {
+                pcmChunks.push(Buffer.from(part.inlineData.data, 'base64'));
+                addedAudio = true;
+              }
+            }
+            if (addedAudio) {
+              if (idleTimer) clearTimeout(idleTimer);
+              idleTimer = setTimeout(() => {
+                if (pcmChunks.length > 0) {
+                  finish({
+                    audioBase64: pcmToWavBase64(pcmChunks, 24000),
+                    mimeType: 'audio/wav',
+                    source: 'gemini-3.8-live',
+                  });
+                }
+              }, 700);
+            }
+            if (message.serverContent?.turnComplete) {
+              if (pcmChunks.length > 0) {
+                finish({
+                  audioBase64: pcmToWavBase64(pcmChunks, 24000),
+                  mimeType: 'audio/wav',
+                  source: 'gemini-3.8-live',
+                });
+              } else {
+                finish(null);
+              }
+            }
+          },
+          onerror: (err: any) => {
+            const errMsg = err?.message || String(err || '');
+            if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+              ttsModelCooldownUntil.set('gemini-3.8-live', Date.now() + 15000);
+            }
+            console.log(`Gemini Live TTS (${language}) note:`, errMsg.slice(0, 140));
+            finish(null);
+          },
+          onclose: () => {
+            if (pcmChunks.length > 0) {
+              finish({
+                audioBase64: pcmToWavBase64(pcmChunks, 24000),
+                mimeType: 'audio/wav',
+                source: 'gemini-3.8-live',
+              });
+            } else {
+              finish(null);
+            }
+          },
+        },
+      })
+      .then((session) => {
+        if (settled) {
+          try {
+            session.close();
+          } catch {
+            // ignore
+          }
+          return;
+        }
+        sessionRef = session;
+        session.sendClientContent({
+          turns: [{ role: 'user', parts: [{ text: speechText }] }],
+          turnComplete: true,
+        });
+      })
+      .catch((err: any) => {
+        const errMsg = err?.message || String(err || '');
+        if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+          ttsModelCooldownUntil.set('gemini-3.8-live', Date.now() + 15000);
+        }
+        console.log(`Gemini Live connect (${language}) note:`, errMsg.slice(0, 140));
+        finish(null);
+      });
+  });
+}
+
+function cleanTextForSpeech(text: string, language: string): string {
+  const trimmed = text.trim().slice(0, 500);
+  if (language === 'ar') {
+    return trimmed
+      .replace(/WBGT/gi, 'مؤشر الحرارة الرطبة')
+      .replace(/MoHRE/gi, 'وزارة الموارد البشرية والتوطين')
+      .replace(/PPE/gi, 'معدات الوقاية')
+      .replace(/UAE/gi, 'الإمارات')
+      .replace(/(\d+(?:\.\d+)?)\s*°\s*C/gi, '$1 درجة مئوية')
+      .replace(/°C/gi, 'درجة مئوية')
+      .replace(/(\d+)\s*%/g, '$1 في المئة')
+      .replace(/\bml\b/gi, 'ملليلتر');
+  }
+  return trimmed
+    .replace(/(\d+(?:\.\d+)?)\s*°\s*C/gi, '$1 degrees Celsius')
+    .replace(/°C/gi, 'degrees Celsius')
+    .replace(/\bWBGT\b/g, 'wet bulb globe temperature')
+    .replace(/\bml\b/gi, 'milliliters');
+}
+
+async function synthesizeTtsInternal(
+  rawText: string,
+  language: string = 'en'
+): Promise<{ audioBase64?: string; mimeType?: string; source?: string; fallback?: boolean; error?: string }> {
+  if (!aiBetaClient && !aiAlphaClient) {
+    return { fallback: true, error: 'Gemini client not initialized' };
+  }
+
+  const normalizedLang = language === 'ar' ? 'ar' : 'en';
+  const speechText = cleanTextForSpeech(rawText, normalizedLang);
+  const cacheKey = `${normalizedLang}:${speechText}`;
+
+  const cached = ttsCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return {
+      audioBase64: cached.audioBase64,
+      mimeType: cached.mimeType,
+      source: cached.source,
+    };
+  }
+
+  const existingPromise = ttsInFlight.get(cacheKey);
+  if (existingPromise) {
+    return existingPromise;
+  }
+
+  const promise = (async () => {
+    const voiceName = normalizedLang === 'ar' ? 'Kore' : 'Puck';
+    const styleHint =
+      normalizedLang === 'ar'
+        ? 'Clear, warm, natural Modern Standard Arabic safety announcer speaking Arabic fluently at a calm pace'
+        : 'Clear, calm, friendly English occupational safety announcer with natural pacing';
+
+    // Put standard v1beta without metadata first (lowest latency & zero schema issues), then flash-tts fallback
+    const attempts: Array<{ client: GoogleGenAI | null; model: string; withMetadata: boolean }> = [
+      { client: aiBetaClient, model: 'gemini-3.8-flash-lite-tts', withMetadata: false },
+      { client: aiBetaClient, model: 'gemini-3.8-flash-lite-tts', withMetadata: true },
+      { client: aiBetaClient, model: 'gemini-3.8-flash-tts', withMetadata: false },
+    ];
+
+    const attemptErrors: string[] = [];
+    const rateLimitedInCall = new Set<string>();
+
+    for (const attempt of attempts) {
+      if (!attempt.client) continue;
+      if (rateLimitedInCall.has(attempt.model)) continue;
+
+      const blockedUntil = ttsModelCooldownUntil.get(attempt.model) || 0;
+      if (blockedUntil > Date.now()) {
+        attemptErrors.push(`${attempt.model}: cooldown`);
+        continue;
+      }
+
+      try {
+        const part: any = { text: speechText };
+        if (attempt.withMetadata) {
+          part.speechMetadata = { style: styleHint };
+        }
+
+        const response = await withTimeout(
+          attempt.client.models.generateContent({
+            model: attempt.model,
+            contents: [
+              {
+                role: 'user',
+                parts: [part],
+              },
+            ],
+            config: {
+              responseModalities: ['AUDIO'],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: { voiceName },
+                },
+              },
+            },
+          }),
+          7500,
+          `TTS_${attempt.model}`
+        );
+
+        const inlineData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+        if (inlineData?.data) {
+          const entry: TtsCacheEntry = {
+            audioBase64: inlineData.data,
+            mimeType: inlineData.mimeType || 'audio/wav',
+            source: attempt.model,
+            expiresAt: Date.now() + TTS_CACHE_TTL_MS,
+          };
+          if (ttsCache.size >= TTS_CACHE_MAX) {
+            const oldestKey = ttsCache.keys().next().value;
+            if (oldestKey) ttsCache.delete(oldestKey);
+          }
+          ttsCache.set(cacheKey, entry);
+          return {
+            audioBase64: entry.audioBase64,
+            mimeType: entry.mimeType,
+            source: entry.source,
+          };
+        } else {
+          const finishReason = response.candidates?.[0]?.finishReason || 'EMPTY_AUDIO';
+          attemptErrors.push(`${attempt.model}(meta=${attempt.withMetadata}): ${finishReason}`);
+        }
+      } catch (err: any) {
+        const errMsg = err?.message || String(err);
+        if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+          rateLimitedInCall.add(attempt.model);
+          const isPerDay = errMsg.includes('PerDay') || errMsg.includes('RequestsPerDay');
+          ttsModelCooldownUntil.set(attempt.model, Date.now() + (isPerDay ? 600000 : 8000));
+        }
+        attemptErrors.push(`${attempt.model}(meta=${attempt.withMetadata}): ${errMsg.slice(0, 120)}`);
+        console.log(`Gemini TTS attempt (${attempt.model}, meta=${attempt.withMetadata}, lang=${normalizedLang}) note:`, errMsg.slice(0, 140));
+      }
+    }
+
+    // Native audio fallback via Gemini Live API (separate quota pool, supports fluent Arabic & English)
+    const liveAudio = await synthesizeViaGeminiLive(speechText, normalizedLang);
+    if (liveAudio) {
+      const entry: TtsCacheEntry = {
+        audioBase64: liveAudio.audioBase64,
+        mimeType: liveAudio.mimeType,
+        source: liveAudio.source,
+        expiresAt: Date.now() + TTS_CACHE_TTL_MS,
+      };
+      if (ttsCache.size >= TTS_CACHE_MAX) {
+        const oldestKey = ttsCache.keys().next().value;
+        if (oldestKey) ttsCache.delete(oldestKey);
+      }
+      ttsCache.set(cacheKey, entry);
+      return liveAudio;
+    }
+
+    return { fallback: true, error: attemptErrors.join(' | ') || 'No audio returned from TTS model' };
+  })();
+
+  ttsInFlight.set(cacheKey, promise);
+  try {
+    return await promise;
+  } finally {
+    ttsInFlight.delete(cacheKey);
+  }
+}
+
 // 2b. Voice-Based Question and Answer Facility (English & Arabic)
 app.post('/api/gemini/voice-qa', async (req: Request, res: Response) => {
   const { question, preferredLanguage = 'en', context = {} } = req.body;
@@ -394,17 +754,29 @@ app.post('/api/gemini/voice-qa', async (req: Request, res: Response) => {
   // Build heuristic fallback answer in case Gemini is offline or rate limited
   const qLower = question.toLowerCase();
   const isArabicQuery = /[\u0600-\u06FF]/.test(question);
-  const targetLang = preferredLanguage === 'ar' || isArabicQuery ? 'ar' : 'en';
+  const targetLang: 'en' | 'ar' = preferredLanguage === 'ar' || isArabicQuery ? 'ar' : 'en';
+  const wbgtNum = Number(wbgt).toFixed(1);
+  const riskAr = riskLevel === 'Critical' ? 'حرج جداً' : riskLevel === 'High' ? 'مرتفع' : riskLevel === 'Moderate' ? 'معتدل' : 'منخفض';
 
   let fallbackAnswer = {
-    answer_en: `Current WBGT in Dubai is ${Number(wbgt).toFixed(1)}°C with ${riskLevel} risk level. Air temperature is ${airTemp}°C with ${humidity}% humidity. Please drink 250ml cold water every 15 minutes, rest in shade, and comply with safety rules.`,
-    answer_ar: `مؤشر الحرارة الرطبة الكروية (WBGT) الحالي في دبي هو ${Number(wbgt).toFixed(1)} درجة مئوية، ومستوى الخطر ${riskLevel === 'Critical' ? 'حرج جداً' : riskLevel === 'High' ? 'مرتفع' : 'معتدل'}. احرص على شرب 250 مل ماء بارد كل 15 دقيقة والراحة في الظل.`,
-    key_advice: [
-      'Drink 250ml of cold water or electrolytes every 15-20 minutes.',
-      'Take scheduled rest breaks in shaded or air-conditioned rest stations.',
-      'Report any dizziness, nausea, or heavy fatigue immediately to your supervisor.',
-    ],
-    safety_tip: 'Do not wait until you feel thirsty to drink water. Keep your neck and head covered.',
+    answer_en: `Current heat index in Dubai is ${wbgtNum}°C with ${riskLevel} risk. Air temperature is ${airTemp}°C with ${humidity}% humidity. Drink 250ml cool water every 15 minutes and rest in shade.`,
+    answer_ar: `مؤشر الحرارة الرطبة الحالي في دبي هو ${wbgtNum} درجة مئوية ومستوى الخطر ${riskAr}. احرص على شرب مئتين وخمسين ملليلتر من الماء البارد كل خمس عشرة دقيقة والراحة في الظل.`,
+    key_advice:
+      targetLang === 'ar'
+        ? [
+            'اشرب 250 مل من الماء البارد أو الأملاح المعدنية كل 15 إلى 20 دقيقة.',
+            'خذ فترات راحة منتظمة في المناطق المظللة أو المكيفة.',
+            'أبلغ المشرف فوراً عند الشعور بأي دوخة أو غثيان أو إرهاق شديد.',
+          ]
+        : [
+            'Drink 250ml of cold water or electrolytes every 15-20 minutes.',
+            'Take scheduled rest breaks in shaded or air-conditioned stations.',
+            'Report any dizziness, nausea, or heavy fatigue immediately to your supervisor.',
+          ],
+    safety_tip:
+      targetLang === 'ar'
+        ? 'لا تنتظر الشعور بالعطش لشرب الماء، وحافظ على تغطية الرأس والرقبة.'
+        : 'Do not wait until you feel thirsty to drink water. Keep your neck and head covered.',
     urgency: 'normal' as 'normal' | 'urgent' | 'emergency',
     source: 'fallback',
   };
@@ -412,13 +784,23 @@ app.post('/api/gemini/voice-qa', async (req: Request, res: Response) => {
   if (qLower.includes('midday') || qLower.includes('ban') || question.includes('حظر') || question.includes('ظهيرة')) {
     fallbackAnswer = {
       answer_en: 'Under UAE MoHRE decree, all outdoor work under direct sunlight is strictly prohibited between 12:30 PM and 3:00 PM during the summer months. Employers must provide cooled rest areas.',
-      answer_ar: 'وفقاً لقرارات وزارة الموارد البشرية والتوطين في دولة الإمارات، يُحظر العمل في الأماكن المكشوفة وتحت أشعة الشمس من الساعة 12:30 ظهراً وحتى 3:00 عصراً، مع توفير استراحات مكيفة للعمال.',
-      key_advice: [
-        'Mandatory halt of outdoor open sun work from 12:30 to 15:00.',
-        'Use designated air-conditioned rest stations across Dubai.',
-        'Violations carry strict regulatory penalties for site operators.',
-      ],
-      safety_tip: 'All crews must move to air-conditioned rest areas during the ban hours.',
+      answer_ar: 'وفقاً لقرارات وزارة الموارد البشرية والتوطين في الإمارات، يُحظر العمل تحت أشعة الشمس المباشرة من الساعة الثانية عشرة والنصف ظهراً وحتى الثالثة عصراً، مع توفير استراحات مكيفة للعمال.',
+      key_advice:
+        targetLang === 'ar'
+          ? [
+              'توقف إلزامي عن العمل تحت الشمس من 12:30 ظهراً إلى 3:00 عصراً.',
+              'التوجه إلى محطات الاستراحة المكيفة المخصصة في الموقع أو المدينة.',
+              'الالتزام التام لحماية العمال وتجنب المخالفات التنظيمية.',
+            ]
+          : [
+              'Mandatory halt of outdoor open sun work from 12:30 to 15:00.',
+              'Use designated air-conditioned rest stations across Dubai.',
+              'Violations carry strict regulatory penalties for site operators.',
+            ],
+      safety_tip:
+        targetLang === 'ar'
+          ? 'يجب انتقال جميع الفرق إلى المناطق المكيفة طوال ساعات حظر الظهيرة.'
+          : 'All crews must move to air-conditioned rest areas during the ban hours.',
       urgency: 'urgent',
       source: 'fallback',
     };
@@ -429,32 +811,53 @@ app.post('/api/gemini/voice-qa', async (req: Request, res: Response) => {
     qLower.includes('cramp') ||
     qLower.includes('vomit') ||
     question.includes('دوخة') ||
+    question.includes('دوار') ||
     question.includes('صداع') ||
     question.includes('غثيان') ||
     question.includes('تعب')
   ) {
     fallbackAnswer = {
-      answer_en: 'These are early warning symptoms of heat exhaustion or heat stroke! Stop physical work immediately, move into an air-conditioned room, loosen PPE, drink cool water, and apply cold towels.',
-      answer_ar: 'هذه مؤشرات خطيرة للإجهاد الحراري أو ضربة الشمس! أوقف العمل الميداني فوراً، توجه إلى غرفة مكيفة، خفف ملابس ومعدات الوقاية، اشرب ماء بارداً، وأبلغ المشرف فوراً.',
-      key_advice: [
-        'Immediate work stoppage and evacuation to an air-conditioned room.',
-        'Apply cold wet cloths to neck, armpits, and groin.',
-        'If confusion or fainting occurs, call 998 for Dubai Emergency Medical Services.',
-      ],
-      safety_tip: 'Never ignore dizziness or nausea in extreme heat—cooling must begin in under 5 minutes.',
+      answer_en: 'These are warning symptoms of heat exhaustion or heat stroke. Stop work immediately, move into an air-conditioned room, loosen PPE, drink cool water, and apply cold wet towels.',
+      answer_ar: 'هذه مؤشرات خطيرة للإجهاد الحراري أو ضربة الشمس. أوقف العمل فوراً، وانتقل إلى غرفة مكيفة، وخفف معدات الوقاية، واشرب ماءً بارداً، وأبلغ المشرف أو اتصل بالإسعاف.',
+      key_advice:
+        targetLang === 'ar'
+          ? [
+              'إيقاف العمل فوراً والانتقال إلى مكان مكيف وبارد.',
+              'وضع كمادات ماء بارد على الرقبة وتحت الإبطين.',
+              'عند الدوار الشديد أو الإغماء اتصل فوراً على 998 للإسعاف.',
+            ]
+          : [
+              'Immediate work stoppage and evacuation to an air-conditioned room.',
+              'Apply cold wet cloths to neck, armpits, and groin.',
+              'If confusion or fainting occurs, call 998 for Dubai Emergency Medical Services.',
+            ],
+      safety_tip:
+        targetLang === 'ar'
+          ? 'لا تتجاهل الدوخة أو الغثيان أبداً؛ يجب بدء التبريد خلال أقل من خمس دقائق.'
+          : 'Never ignore dizziness or nausea in extreme heat—cooling must begin in under 5 minutes.',
       urgency: 'emergency',
       source: 'fallback',
     };
-  } else if (qLower.includes('water') || qLower.includes('drink') || question.includes('ماء') || question.includes('شرب')) {
+  } else if (qLower.includes('water') || qLower.includes('drink') || question.includes('ماء') || question.includes('شرب') || question.includes('أملاح')) {
     fallbackAnswer = {
-      answer_en: 'In current Dubai thermal conditions, drink at least 250ml of cool water or electrolyte-rich fluids every 15 to 20 minutes, even if you are not thirsty. Avoid sugary sodas or energy drinks.',
-      answer_ar: 'في الأجواء الحارة الحالية في دبي، اشرب ما لا يقل عن 250 مل من الماء البارد أو المشروبات الغنية بالأملاح كل 15 إلى 20 دقيقة، حتى دون الشعور بالعطش. تجنب المشروبات الغازية السكرية.',
-      key_advice: [
-        'Drink 250ml every 15-20 minutes.',
-        'Include electrolytes or oral rehydration salts in high humidity.',
-        'Keep water shaded and below 15°C for maximum palatability.',
-      ],
-      safety_tip: 'Dark urine indicates dehydration. Check your hydration status regularly.',
+      answer_en: 'In current Dubai thermal conditions, drink at least 250ml of cool water or electrolyte fluids every 15 to 20 minutes, even before feeling thirsty. Avoid sugary sodas.',
+      answer_ar: 'في الأجواء الحارة الحالية في دبي، اشرب مئتين وخمسين ملليلتر من الماء البارد أو المشروبات الغنية بالأملاح كل خمس عشرة إلى عشرين دقيقة، وتجنب المشروبات الغازية السكرية.',
+      key_advice:
+        targetLang === 'ar'
+          ? [
+              'اشرب 250 مل ماء بارداً كل 15 إلى 20 دقيقة بانتظام.',
+              'أضف أملاح الترطيب عند ارتفاع الرطوبة والتعرق الشديد.',
+              'احتفظ بالماء في عبوات معزولة ومبردة دون 15 درجة مئوية.',
+            ]
+          : [
+              'Drink 250ml every 15-20 minutes.',
+              'Include electrolytes or oral rehydration salts in high humidity.',
+              'Keep water shaded and below 15°C for maximum palatability.',
+            ],
+      safety_tip:
+        targetLang === 'ar'
+          ? 'تغيّر لون البول إلى الداكن يدل على الجفاف ويستوجب زيادة شرب السوائل.'
+          : 'Dark urine indicates dehydration. Check your hydration status regularly.',
       urgency: 'normal',
       source: 'fallback',
     };
@@ -467,14 +870,24 @@ app.post('/api/gemini/voice-qa', async (req: Request, res: Response) => {
     question.includes('استراحة')
   ) {
     fallbackAnswer = {
-      answer_en: 'Dubai Municipality and MoHRE provide hundreds of air-conditioned rest hubs with cold drinking water for delivery riders in Downtown, Business Bay, Al Barsha, Deira, and Dubai Marina.',
-      answer_ar: 'توفر بلدية دبي ووزارة الموارد البشرية والتوطين مئات محطات الاستراحة المكيفة والمزودة بماء بارد وشواحن لسائقي التوصيل في وسط المدينة، الخليج التجاري، البرشاء، ديرة، ودبي مارينا.',
-      key_advice: [
-        'Rest hubs are available at key Dubai districts with free cold water.',
-        'Stop and cool down for 15 minutes between long delivery runs.',
-        'Use the Rider View cooling map to find the nearest certified station.',
-      ],
-      safety_tip: 'Cool your motorcycle helmet and drink water before taking the next delivery.',
+      answer_en: 'Dubai Municipality and MoHRE provide air-conditioned rest hubs with cold drinking water for delivery riders in Downtown, Business Bay, Al Barsha, Deira, and Dubai Marina.',
+      answer_ar: 'توفر بلدية دبي محطات استراحة مكيفة ومزودة بماء بارد لسائقي التوصيل في وسط المدينة والخليج التجاري والبرشاء وديرة ودبي مارينا.',
+      key_advice:
+        targetLang === 'ar'
+          ? [
+              'تتوفر محطات تبريد ومياه باردة مجانية في مناطق دبي الرئيسية.',
+              'توقف للراحة والتبريد لمدة 15 دقيقة بين طلبات التوصيل الطويلة.',
+              'استخدم خريطة الرادار في واجهة السائق للوصول لأقرب محطة.',
+            ]
+          : [
+              'Rest hubs are available at key Dubai districts with free cold water.',
+              'Stop and cool down for 15 minutes between long delivery runs.',
+              'Use the Rider View cooling map to find the nearest certified station.',
+            ],
+      safety_tip:
+        targetLang === 'ar'
+          ? 'برّد خوذة الدراجة واشرب الماء قبل استلام طلب التوصيل التالي.'
+          : 'Cool your motorcycle helmet and drink water before taking the next delivery.',
       urgency: 'normal',
       source: 'fallback',
     };
@@ -485,29 +898,21 @@ app.post('/api/gemini/voice-qa', async (req: Request, res: Response) => {
   }
 
   try {
-    const prompt = `
-You are the bilingual Voice Q&A Safety Assistant for "HeatShield", an occupational heat-health system for outdoor workers and delivery riders in Dubai, UAE.
+    const systemInstruction = `You are the fast bilingual Voice Q&A Safety Assistant for "HeatShield" protecting outdoor workers & delivery riders in Dubai, UAE (UAE MoHRE rules & ISO 7243).
+Keep answers concise, direct, and natural to listen to aloud (2 short sentences, ~25-35 words per language).
+For answer_ar: write fluent, clear Modern Standard Arabic (العربية الفصحى المبسطة) WITHOUT English words or Latin acronyms like WBGT or °C (write "مؤشر الحرارة الرطبة" and "درجة مئوية" in Arabic words so Arabic voice synthesis reads smoothly).
+Write key_advice (3 brief bullets) and safety_tip (1 brief sentence) in ${targetLang === 'ar' ? 'Arabic' : 'English'}.
+If symptoms (dizziness, nausea, cramps, fainting) appear, set urgency to "emergency" and advise stopping work, AC rest, cold fluids, and calling 998.`;
 
-CURRENT CONDITIONS & CONTEXT:
-- Role of user: ${role}
-- Air Temperature: ${airTemp}°C, Humidity: ${humidity}%, Solar Globe: ${globeTemp}°C
-- Calculated WBGT: ${wbgt}°C, Risk Level: ${riskLevel}
-- Workload: ${workload}, Midday Ban Active: ${isMiddayBanActive ? 'YES (12:30-15:00 legal stop)' : 'NO'}
-- Reported symptoms: ${symptoms.length > 0 ? symptoms.join(', ') : 'None reported'}
-
-USER QUESTION: "${question}"
-USER PREFERRED LANGUAGE: ${targetLang}
-
-REQUIREMENTS:
-1. Provide a spoken-friendly, conversational, direct response designed to be LISTENED TO aloud through speech synthesis. Keep sentences clear, crisp, and under 50 words per language.
-2. Provide answers in BOTH English (answer_en) AND authentic Dubai Arabic (answer_ar). Use standard Arabic (فصحى مبسطة وواضحة جداً) suitable for construction workers and delivery riders in the UAE.
-3. If the user mentions symptoms (dizziness, nausea, vomiting, fainting, cramps), prioritize emergency first-aid protocols (stop work, cool shelter, hydrate, alert supervisor, call 998).
-4. Strictly align with UAE Ministry of Human Resources and Emiratisation (MoHRE) regulations and ISO 7243 standards.
-5. Return JSON matching the schema.
-`;
+    const prompt = `Context: role=${role}, Ta=${airTemp}°C, RH=${humidity}%, Tg=${globeTemp}°C, WBGT=${wbgtNum}°C, Risk=${riskLevel}, Workload=${workload}, MiddayBan=${isMiddayBanActive ? 'ACTIVE(12:30-15:00)' : 'NO'}, Symptoms=${symptoms.length > 0 ? symptoms.join(',') : 'None'}.
+Preferred language: ${targetLang}.
+User question: "${question}"`;
 
     const responseText = await generateContentResilient({
+      systemInstruction,
       contents: prompt,
+      fast: true,
+      timeoutMs: 4000,
       responseSchema: {
         type: Type.OBJECT,
         properties: {
@@ -528,12 +933,22 @@ REQUIREMENTS:
     });
 
     if (!responseText) {
+      const targetSpeech = targetLang === 'ar' ? fallbackAnswer.answer_ar : fallbackAnswer.answer_en;
+      void synthesizeTtsInternal(targetSpeech, targetLang);
       return res.json({ ...fallbackAnswer, source: 'resilient_fallback' });
     }
 
     const parsed = JSON.parse(responseText);
+    // Pre-warm TTS cache immediately in the background while response is sent to client
+    const primarySpeech = targetLang === 'ar' ? parsed.answer_ar : parsed.answer_en;
+    if (primarySpeech) {
+      void synthesizeTtsInternal(primarySpeech, targetLang);
+    }
+
     return res.json({ ...parsed, source: 'gemini' });
   } catch (err: any) {
+    const targetSpeech = targetLang === 'ar' ? fallbackAnswer.answer_ar : fallbackAnswer.answer_en;
+    void synthesizeTtsInternal(targetSpeech, targetLang);
     return res.json({ ...fallbackAnswer, source: 'fallback_error' });
   }
 });
@@ -546,68 +961,8 @@ app.post('/api/gemini/tts', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Text is required for TTS synthesis' });
   }
 
-  if (!aiBetaClient && !aiAlphaClient) {
-    return res.json({ fallback: true, message: 'Gemini client not initialized; use client-side speech synthesis' });
-  }
-
-  const voiceName = language === 'ar' ? 'Kore' : 'Puck';
-  const truncatedText = text.slice(0, 600);
-
-  // Attempt 1: v1beta with speechConfig (standard Gemini TTS format)
-  const attempts: Array<{ client: GoogleGenAI | null; model: string; withMetadata: boolean }> = [
-    { client: aiBetaClient, model: 'gemini-3.8-flash-lite-tts', withMetadata: false },
-    { client: aiAlphaClient, model: 'gemini-3.8-flash-lite-tts', withMetadata: true },
-    { client: aiBetaClient, model: 'gemini-3.8-flash-tts', withMetadata: false },
-  ];
-
-  let lastError = '';
-
-  for (const attempt of attempts) {
-    if (!attempt.client) continue;
-    try {
-      const part: any = { text: truncatedText };
-      if (attempt.withMetadata) {
-        part.speechMetadata = {
-          style:
-            language === 'ar'
-              ? 'Clear, protective occupational safety announcer speaking authentic Arabic'
-              : 'Clear, friendly occupational safety voice',
-        };
-      }
-
-      const response = await attempt.client.models.generateContent({
-        model: attempt.model,
-        contents: [
-          {
-            role: 'user',
-            parts: [part],
-          },
-        ],
-        config: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName },
-            },
-          },
-        },
-      });
-
-      const inlineData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData;
-      if (inlineData?.data) {
-        return res.json({
-          audioBase64: inlineData.data,
-          mimeType: inlineData.mimeType || 'audio/wav',
-          source: attempt.model,
-        });
-      }
-    } catch (err: any) {
-      lastError = err?.message || String(err);
-      console.log(`Gemini TTS attempt (${attempt.model}, meta=${attempt.withMetadata}) note:`, lastError.slice(0, 140));
-    }
-  }
-
-  return res.json({ fallback: true, error: lastError });
+  const result = await synthesizeTtsInternal(text, language);
+  return res.json(result);
 });
 
 // 2d. Server-Side Audio Transcription Endpoint (English & Arabic via gemini-3.5-transcribe)
@@ -636,20 +991,30 @@ app.post('/api/gemini/transcribe', async (req: Request, res: Response) => {
 
   for (const model of modelsToTry) {
     try {
-      const response = await client.models.generateContent({
-        model,
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                mimeType: normalizedMime,
-                data: audioBase64,
+      const config =
+        model === 'gemini-4-hydrogen'
+          ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+          : undefined;
+
+      const response = await withTimeout(
+        client.models.generateContent({
+          model,
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  mimeType: normalizedMime,
+                  data: audioBase64,
+                },
               },
-            },
-            { text: promptText },
-          ],
-        },
-      });
+              { text: promptText },
+            ],
+          },
+          ...(config ? { config } : {}),
+        }),
+        7000,
+        `TRANSCRIBE_${model}`
+      );
 
       const transcript = (response.text || '')
         .replace(/^["'`]+|["'`]+$/g, '')

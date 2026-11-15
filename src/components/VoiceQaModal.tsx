@@ -18,6 +18,7 @@ import {
   isSpeechRecognitionSupported,
   playTtsOrFallback,
   stopAllSpeech,
+  unlockAudioPlayback,
   SpeechRecognizerHandle,
 } from '../utils/speech';
 
@@ -119,7 +120,7 @@ export const VoiceQaModal: React.FC<VoiceQaModalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [playingMessageId, setPlayingMessageId] = useState<string | null>(null);
   const [playingLang, setPlayingLang] = useState<'en' | 'ar' | null>(null);
-  const [speechSpeed, setSpeechSpeed] = useState<number>(0.95);
+  const [speechSpeed, setSpeechSpeed] = useState<number>(1.0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const recognizerRef = useRef<SpeechRecognizerHandle | null>(null);
@@ -272,6 +273,7 @@ export const VoiceQaModal: React.FC<VoiceQaModalProps> = ({
     lang: 'en' | 'ar'
   ) => {
     if (!text.trim()) return;
+    unlockAudioPlayback();
 
     if (playingMessageId === messageId && playingLang === lang) {
       stopAllSpeech();
@@ -304,6 +306,8 @@ export const VoiceQaModal: React.FC<VoiceQaModalProps> = ({
   const handleSendQuestion = async (queryToSend?: string, explicitLang?: 'en' | 'ar') => {
     const questionText = (queryToSend ?? inputQuestion).trim();
     if (!questionText || isLoadingRef.current) return;
+
+    unlockAudioPlayback();
 
     // Auto-detect Arabic script in typed or spoken queries so Arabic answers & Arabic voice play automatically
     const hasArabicScript = /[\u0600-\u06FF]/.test(questionText);
@@ -400,25 +404,40 @@ export const VoiceQaModal: React.FC<VoiceQaModalProps> = ({
   ) => {
     setIsTranscribing(true);
     try {
+      const cleanedBrowser = fallbackBrowserText.trim();
+      const hasConfidentLiveTranscript =
+        cleanedBrowser.split(/\s+/).length >= 2 &&
+        (captureLang === 'ar' ? /[\u0600-\u06FF]/.test(cleanedBrowser) : /[a-zA-Z]{2,}/.test(cleanedBrowser));
+
       const base64Audio = await blobToBase64(audioBlob);
-      const res = await fetch('/api/gemini/transcribe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          audioBase64: base64Audio,
-          mimeType: audioBlob.type || 'audio/webm',
-          language: captureLang,
-        }),
-      });
+      const controller = new AbortController();
+      const timeoutHandle = hasConfidentLiveTranscript
+        ? setTimeout(() => controller.abort(), 2800)
+        : null;
 
       let transcript = '';
-      if (res.ok) {
-        const data = await res.json();
-        transcript = (data.transcript || '').trim();
+      try {
+        const res = await fetch('/api/gemini/transcribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            audioBase64: base64Audio,
+            mimeType: audioBlob.type || 'audio/webm',
+            language: captureLang,
+          }),
+          signal: controller.signal,
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          transcript = (data.transcript || '').trim();
+        }
+      } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
       }
 
-      if (!transcript && fallbackBrowserText.trim()) {
-        transcript = fallbackBrowserText.trim();
+      if (!transcript && cleanedBrowser) {
+        transcript = cleanedBrowser;
       }
 
       if (!transcript) {
@@ -464,6 +483,7 @@ export const VoiceQaModal: React.FC<VoiceQaModalProps> = ({
   };
 
   const handleStopListening = () => {
+    unlockAudioPlayback();
     stoppingManuallyRef.current = true;
     setIsListening(false);
 
@@ -487,6 +507,7 @@ export const VoiceQaModal: React.FC<VoiceQaModalProps> = ({
   };
 
   const handleStartListening = async () => {
+    unlockAudioPlayback();
     setErrorMessage(null);
     setLastTranscriptBanner(null);
     stopAllSpeech();
@@ -581,7 +602,7 @@ export const VoiceQaModal: React.FC<VoiceQaModalProps> = ({
         };
 
         mediaRecorderRef.current = recorder;
-        recorder.start(250);
+        recorder.start(150);
         setIsListening(true);
 
         // Simultaneously run Web Speech API strictly for live interim preview & auto end-of-sentence detection
@@ -605,7 +626,7 @@ export const VoiceQaModal: React.FC<VoiceQaModalProps> = ({
                   setIsListening(false);
                   mediaRecorderRef.current.stop();
                 }
-              }, 350);
+              }, 180);
             },
             () => {
               // Ignore browser SpeechRecognition network/no-speech errors because MediaRecorder + Gemini handles final transcript!
@@ -769,7 +790,7 @@ export const VoiceQaModal: React.FC<VoiceQaModalProps> = ({
                 className="bg-white border border-[#C5DFD0] rounded-md px-1.5 py-0.5 text-[11px] font-bold text-[#173829] cursor-pointer"
               >
                 <option value="0.85">0.85x</option>
-                <option value="0.95">1.0x</option>
+                <option value="1.0">1.0x</option>
                 <option value="1.15">1.15x</option>
               </select>
             </div>
