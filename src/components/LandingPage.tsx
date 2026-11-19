@@ -230,7 +230,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       title: isAr ? 'حظر الظهيرة وجدولة SmartShift الذكية' : 'MoHRE Midday Ban & SmartShift Planning',
       summary: isAr
         ? 'تطبيق إلزامي لقرار حظر العمل تحت أشعة الشمس من 12:30 إلى 15:00، وتوجيه سائقي التوصيل إلى 6 محطات استراحة مبردة، وإعادة توزيع مهام الفرق عبر 13 منطقة في دبي.'
-        : 'Enforces UAE Ministerial Decree No. 44 (12:30–15:00 sun-work stop), guides delivery riders to 6 Dubai AC sanctuaries, and builds compliant 06:00–18:00 SmartShift schedules.',
+        : 'Enforces the UAE MOHRE Midday Break Rule (12:30–15:00 sun-work stop), guides delivery riders to 6 Dubai AC sanctuaries, and builds compliant 06:00–18:00 SmartShift schedules.',
       detail: isAr
         ? 'تصدير فوري لسجلات الامتثال CSV لجهات التفتيش.'
         : 'Includes one-click CSV compliance audit export for Dubai Municipality & MoHRE inspectors.',
@@ -1351,7 +1351,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               <h2 className="text-2xl font-black text-[#173829]">
                 {isAr
                   ? 'مبني على 5 دراسات محكمة ومعيار ISO 7243 وقرار حظر الظهيرة.'
-                  : 'Grounded in 5 peer-reviewed Gulf & ISO 7243 studies and UAE MoHRE Decree No. 44.'}
+                  : 'Grounded in 5 peer-reviewed Gulf & ISO 7243 studies and the UAE MOHRE Midday Break Rule.'}
               </h2>
               <p className="text-xs sm:text-sm text-[#385947]">
                 {isAr

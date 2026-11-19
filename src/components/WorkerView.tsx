@@ -14,12 +14,26 @@ import {
   Lock,
   X,
   UserCheck,
-  Activity,
+  PhoneCall,
+  QrCode,
+  Umbrella,
+  CheckCircle2,
 } from 'lucide-react';
 import { AppLocale, UI_TRANSLATIONS } from '../utils/i18n';
+import { WORKER_VIEW_LABELS } from '../services/i18n';
+import {
+  CrewRosterRow,
+  RestStationConfig,
+  SchedulePlanResult,
+  ShadeCheckInRecord,
+  SitePreset,
+  WorkerLanguageCode,
+} from '../types/occupational';
+import { buildRestStationsForSite } from '../services/shadeRegistryService';
 import { BilingualResultsAudioCard } from './BilingualResultsAudioCard';
 import { FlyingCard } from './FlyingCard';
 import { HydrationTrackerWidget } from './HydrationTrackerWidget';
+import { WorkerSimpleCardPanel } from './WorkerSimpleCardPanel';
 
 interface WorkerViewProps {
   evaluation: RiskEvaluation;
@@ -41,6 +55,14 @@ interface WorkerViewProps {
   lastHydrationTime: string | null;
   onLogDrink: (ml: number, isElectrolyte?: boolean, wasOnSchedule?: boolean) => void;
   onUndoDrink: (ml: number) => void;
+  // Zero-Typing Shady Area Check-In
+  roster?: CrewRosterRow[];
+  selectedSite?: SitePreset;
+  scannedStation?: RestStationConfig | null;
+  lastShadeCheckIn?: ShadeCheckInRecord | null;
+  onShadeCheckIn?: (station: RestStationConfig, crewId: string, method: 'qr_scan' | 'quick_tap') => Promise<void> | void;
+  onDismissScannedStation?: () => void;
+  coordinatorPlan?: SchedulePlanResult;
 }
 
 export const WorkerView: React.FC<WorkerViewProps> = ({
@@ -63,27 +85,15 @@ export const WorkerView: React.FC<WorkerViewProps> = ({
   lastHydrationTime,
   onLogDrink,
   onUndoDrink,
+  roster = [],
+  selectedSite,
+  scannedStation = null,
+  lastShadeCheckIn = null,
+  onShadeCheckIn,
+  onDismissScannedStation,
+  coordinatorPlan,
 }) => {
   const t = UI_TRANSLATIONS[locale];
-
-  const availableSymptoms = [
-    {
-      id: 'dizziness',
-      label: locale === 'ar' ? 'دوخة أو عدم اتزان' : 'Dizziness or lightheadedness',
-    },
-    {
-      id: 'headache',
-      label: locale === 'ar' ? 'صداع نابض مستمر' : 'Throbbing headache',
-    },
-    {
-      id: 'nausea',
-      label: locale === 'ar' ? 'غثيان أو اضطراب معدة' : 'Nausea or vomiting',
-    },
-    {
-      id: 'cramps',
-      label: locale === 'ar' ? 'تقلصات عضلية شديدة' : 'Heavy muscle cramps',
-    },
-  ];
 
   // Break timer & modals state
   const [breakTimerSeconds, setBreakTimerSeconds] = useState(18 * 60);
@@ -91,6 +101,37 @@ export const WorkerView: React.FC<WorkerViewProps> = ({
   const [showDataLedger, setShowDataLedger] = useState(false);
   const [buddyCheckCount, setBuddyCheckCount] = useState(2);
   const [justCheckedBuddy, setJustCheckedBuddy] = useState(false);
+  const [workerLabelLang, setWorkerLabelLang] = useState<WorkerLanguageCode>(
+    locale === 'ar' ? 'ar' : 'en'
+  );
+  const workerLabels = WORKER_VIEW_LABELS[workerLabelLang];
+  const fallbackStations = buildRestStationsForSite(
+    selectedSite || {
+      id: 'dubai',
+      name: 'Dubai Industrial Site (Al Quoz)',
+      nameAr: 'موقع دبي الصناعي (القوز)',
+      emirate: 'Dubai',
+      latitude: 25.1342,
+      longitude: 55.2286,
+    }
+  );
+  const activeStation = scannedStation || fallbackStations[0];
+  const [selectedStationId, setSelectedStationId] = useState<string>(activeStation.stationId);
+  useEffect(() => {
+    if (scannedStation?.stationId) {
+      setSelectedStationId(scannedStation.stationId);
+    }
+  }, [scannedStation]);
+
+  const currentStation =
+    (scannedStation && scannedStation.stationId === selectedStationId
+      ? scannedStation
+      : fallbackStations.find((s) => s.stationId === selectedStationId)) || activeStation;
+
+  const crewButtons = Array.from(
+    new Set(roster.map((r) => r.crew_id).filter(Boolean))
+  );
+  const quickCrews = crewButtons.length > 0 ? crewButtons : ['Crew-A', 'Crew-B', 'Crew-C'];
 
   // Countdown timer for next break
   useEffect(() => {
@@ -112,8 +153,155 @@ export const WorkerView: React.FC<WorkerViewProps> = ({
     setTimeout(() => setJustCheckedBuddy(false), 3000);
   };
 
+  const formatCheckInTime = (iso: string) => {
+    try {
+      return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return '';
+    }
+  };
+
   return (
     <div className="space-y-6">
+      {/* 0. Instant QR / Zero-Typing Shady Area Check-In Card */}
+      <FlyingCard direction="scale" delay={0} onScrollReveal={false}>
+        <div
+          dir={workerLabels.dir}
+          className={`rounded-2xl p-5 shadow-xs transition-all border-2 space-y-3.5 ${
+            scannedStation || lastShadeCheckIn
+              ? 'bg-[#edf4f0] border-[#173829]'
+              : 'bg-white border-[#e5dfd3]'
+          }`}
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center space-x-2.5 rtl:space-x-reverse">
+              <div className="p-2.5 rounded-xl bg-[#173829] text-[#A3E5C1] shrink-0">
+                {lastShadeCheckIn ? (
+                  <CheckCircle2 className="w-5 h-5" />
+                ) : (
+                  <QrCode className="w-5 h-5" />
+                )}
+              </div>
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="font-black text-sm text-[#173829]">
+                    {workerLabels.shadeCheckInTitle}
+                  </h3>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#173829] text-[#FAF8F3]">
+                    {currentStation.stationId}
+                  </span>
+                </div>
+                <p className="text-xs text-[#24533D] font-semibold mt-0.5">
+                  <Umbrella className="w-3.5 h-3.5 inline me-1" />
+                  {currentStation.stationName}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {(['en', 'ar', 'hi', 'ur'] as WorkerLanguageCode[]).map((code) => (
+                <button
+                  key={code}
+                  type="button"
+                  onClick={() => setWorkerLabelLang(code)}
+                  className={`px-2 py-1 rounded-lg text-[10px] font-bold border cursor-pointer ${
+                    workerLabelLang === code
+                      ? 'bg-[#173829] text-[#FAF8F3] border-[#173829]'
+                      : 'bg-white text-[#173829] border-[#d8d0bf]'
+                  }`}
+                >
+                  {WORKER_VIEW_LABELS[code].langName}
+                </button>
+              ))}
+              {scannedStation && onDismissScannedStation && (
+                <button
+                  type="button"
+                  onClick={onDismissScannedStation}
+                  className="p-1.5 rounded-lg bg-white border border-[#d8d0bf] text-[#426050] hover:text-[#173829] cursor-pointer"
+                  aria-label="Clear QR scan banner"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {lastShadeCheckIn && (
+            <div className="bg-white border border-[#24533D] rounded-xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 font-black text-[#173829]">
+                <CheckCircle2 className="w-4 h-4 text-[#166534] shrink-0" />
+                <span>
+                  {workerLabels.shadeCheckedInStatus}: {lastShadeCheckIn.stationName} ({lastShadeCheckIn.crew_id})
+                </span>
+              </div>
+              <span className="font-mono font-bold text-[#24533D] bg-[#edf4f0] px-2.5 py-0.5 rounded-md">
+                {formatCheckInTime(lastShadeCheckIn.checkedInAtIso)}
+              </span>
+            </div>
+          )}
+
+          {/* Rest station quick pills + 1-tap Crew Check-In buttons (zero keyboard typing) */}
+          <div className="space-y-2">
+            {!scannedStation && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {fallbackStations.map((st) => (
+                  <button
+                    key={st.stationId}
+                    type="button"
+                    onClick={() => setSelectedStationId(st.stationId)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border cursor-pointer transition-colors ${
+                      currentStation.stationId === st.stationId
+                        ? 'bg-[#24533D] text-[#FAF8F3] border-[#24533D]'
+                        : 'bg-[#f7f5ee] text-[#173829] border-[#d8d0bf] hover:bg-[#eae4d5]'
+                    }`}
+                  >
+                    {st.stationId}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="text-[11px] font-bold text-[#426050]">
+              {workerLabels.shadeTapCrewPrompt}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {quickCrews.map((crewCode) => (
+                <button
+                  key={crewCode}
+                  type="button"
+                  onClick={() =>
+                    onShadeCheckIn?.(
+                      currentStation,
+                      crewCode,
+                      scannedStation ? 'qr_scan' : 'quick_tap'
+                    )
+                  }
+                  className="px-4 py-2.5 rounded-xl bg-[#173829] hover:bg-[#24533d] active:scale-95 text-[#FAF8F3] text-xs font-black flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                >
+                  <CheckCircle2 className="w-4 h-4 text-[#A3E5C1]" />
+                  <span>{crewCode}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="text-[10px] text-[#426050]">
+            {workerLabels.noIndividualTrackingNote}
+          </div>
+        </div>
+      </FlyingCard>
+
+      {/* 0b. Read-Only Worker Simple Card & Printable Gate QR */}
+      <FlyingCard direction="bottom" delay={0.03} onScrollReveal={false}>
+        <WorkerSimpleCardPanel
+          evaluation={evaluation}
+          roster={roster}
+          coordinatorPlan={coordinatorPlan}
+          stations={fallbackStations}
+          initialCrewId={scannedStation?.defaultCrewId}
+        />
+      </FlyingCard>
+
       {/* 1. Primary Risk Card */}
       <FlyingCard direction="scale" delay={0} onScrollReveal={false}>
         <RiskCard evaluation={evaluation} onOpenWhyAlert={onOpenWhyAlert} locale={locale} />
@@ -234,7 +422,7 @@ export const WorkerView: React.FC<WorkerViewProps> = ({
               <div className="flex items-center justify-between text-xs">
                 <span className="text-[#426050]">{t.worker.assignedBuddy}:</span>
                 <strong className="text-[#173829] font-bold font-sans">
-                  {locale === 'ar' ? 'راشد كومار (سقالات ب)' : 'Rashid Kumar (Crew B)'}
+                  {locale === 'ar' ? 'زوج عمل مجهول (فريق ب)' : 'Anonymous Crew-B Peer Pair'}
                 </strong>
               </div>
               <div className="flex items-center justify-between text-xs">
@@ -320,78 +508,65 @@ export const WorkerView: React.FC<WorkerViewProps> = ({
         </FlyingCard>
       </div>
 
-      {/* 5. Innovation 3: Self-Report Early Heat Strain Symptoms */}
+      {/* 5. Emergency & First Aid Escalation Card + Hindi/Urdu Optional Labels (Zero Individual Health Collection) */}
       <FlyingCard direction="bottom" delay={0.06}>
-        <div className="bg-white border border-[#e5dfd3] rounded-2xl p-5 shadow-xs hover:shadow-md transition-shadow">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 pb-3 border-b border-[#ece6da]">
-          <div>
-            <div className="flex items-center space-x-2 rtl:space-x-reverse">
-              <Activity className="w-4 h-4 text-[#c81d25]" />
-              <h3 className="font-bold text-sm text-[#173829]">{t.worker.symptomsTitle}</h3>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#fee2e2] text-[#991b1b] border border-[#fecaca]">
-                {t.worker.symptomsBadge}
-              </span>
+        <div
+          dir={workerLabels.dir}
+          className="bg-white border border-[#e5dfd3] rounded-2xl p-5 shadow-xs hover:shadow-md transition-shadow space-y-4"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-[#ece6da]">
+            <div>
+              <div className="flex items-center space-x-2 rtl:space-x-reverse">
+                <AlertOctagon className="w-4 h-4 text-[#c81d25]" />
+                <h3 className="font-bold text-sm text-[#173829]">
+                  {workerLabels.stopSignTitle}
+                </h3>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#fee2e2] text-[#991b1b] border border-[#fecaca]">
+                  UAE 998
+                </span>
+              </div>
+              <p className="text-xs text-[#426050] mt-0.5">
+                Automated environmental guidance only. Not a medical diagnosis or treatment.
+              </p>
             </div>
-            <p className="text-xs text-[#426050] mt-0.5">{t.worker.symptomsDesc}</p>
-          </div>
 
-          {symptoms.length > 0 && (
-            <button
-              onClick={() => setShowSosModal(true)}
-              className="flex items-center space-x-1.5 rtl:space-x-reverse px-3 py-1.5 rounded-xl bg-[#c81d25] hover:bg-[#a5151c] text-white text-xs font-bold transition-all shadow-xs animate-pulse"
-            >
-              <AlertOctagon className="w-3.5 h-3.5" />
-              <span>{t.worker.alertMedic}</span>
-            </button>
-          )}
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
-          {availableSymptoms.map((symp) => {
-            const isChecked = symptoms.includes(symp.id);
-            return (
-              <button
-                key={symp.id}
-                onClick={() => onToggleSymptom(symp.id)}
-                className={`p-3 rounded-xl border text-left rtl:text-right text-xs transition-all flex items-start space-x-2 rtl:space-x-reverse ${
-                  isChecked
-                    ? 'bg-[#fee2e2] border-[#f87171] text-[#991b1b] font-bold shadow-xs'
-                    : 'bg-[#f7f5ee] border-[#e2dcd0] text-[#173829] hover:bg-[#eae4d5]'
-                }`}
-              >
-                <span
-                  className={`w-4 h-4 rounded mt-0.5 flex items-center justify-center shrink-0 border ${
-                    isChecked
-                      ? 'bg-[#c81d25] border-[#c81d25] text-white'
-                      : 'border-[#b5ac9a] bg-white'
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(['en', 'ar', 'hi', 'ur'] as WorkerLanguageCode[]).map((code) => (
+                <button
+                  key={code}
+                  type="button"
+                  onClick={() => setWorkerLabelLang(code)}
+                  className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                    workerLabelLang === code
+                      ? 'bg-[#173829] text-[#f7f5ee] border-[#173829]'
+                      : 'bg-[#f7f5ee] text-[#173829] border-[#e2dcd0] hover:bg-[#eae4d5]'
                   }`}
                 >
-                  {isChecked && '✓'}
-                </span>
-                <span className="leading-snug">{symp.label}</span>
+                  {WORKER_VIEW_LABELS[code].langName}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => setShowSosModal(true)}
+                className="flex items-center space-x-1.5 rtl:space-x-reverse px-3 py-1.5 rounded-xl bg-[#c81d25] hover:bg-[#a5151c] text-white text-xs font-bold transition-all shadow-xs cursor-pointer"
+              >
+                <PhoneCall className="w-3.5 h-3.5" />
+                <span>{workerLabels.call998Label}</span>
               </button>
-            );
-          })}
-        </div>
-
-        {symptoms.length > 0 && (
-          <div className="mt-4 p-3.5 rounded-xl bg-[#fee2e2] border border-[#fca5a5] flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center space-x-2 rtl:space-x-reverse text-xs text-[#991b1b] font-bold">
-              <AlertOctagon className="w-4 h-4 text-[#c81d25] shrink-0" />
-              <span>
-                {locale === 'ar'
-                  ? 'تم رصد أعراض إجهاد حراري: تم رفع مستوى الخطر آلياً وإبلاغ مشرف الموقع.'
-                  : 'Heat strain symptoms detected: Risk level has been elevated automatically.'}
-              </span>
             </div>
-            <button
-              onClick={() => onToggleSymptom('none')}
-              className="text-xs text-[#991b1b] underline hover:text-black font-semibold"
-            >
-              {locale === 'ar' ? 'مسح الأعراض' : 'Clear symptoms'}
-            </button>
           </div>
-        )}
+
+          <div className="p-3.5 rounded-xl bg-[#fff5f5] border border-[#fca5a5] space-y-2 text-xs text-[#991b1b]">
+            <div className="font-bold">{workerLabels.middayBreakLabel}</div>
+            <ul className="list-disc pl-5 rtl:pr-5 space-y-1 font-medium">
+              {workerLabels.stopSignsList.map((line, i) => (
+                <li key={i}>{line}</li>
+              ))}
+            </ul>
+            <div className="pt-1 border-t border-[#fecaca] text-[11px] text-[#7f1d1d] font-semibold">
+              {workerLabels.hydrateLabel} · {workerLabels.shadeLabel}
+            </div>
+          </div>
         </div>
       </FlyingCard>
 

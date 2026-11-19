@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Role,
   SunExposure,
@@ -9,9 +9,66 @@ import {
   SmartShiftPlan,
   AlertFeedbackState,
 } from './types';
+import {
+  ComplianceConfig,
+} from './config/complianceConfig';
+import {
+  CrewRosterRow,
+  EnvWeatherState,
+  SchedulePlanResult,
+  ShiftBlockPlan,
+  SitePreset,
+  RestStationConfig,
+  ShadeCheckInRecord,
+  AcclimatizationStatusTag,
+  CrewAcclimatizationPlan,
+  SiteReadinessChecklistState,
+  CrewZoneAssignment,
+  HydrationAlertAuditRecord,
+  AnonymousIncidentRecord,
+  AuditGovernanceEntry,
+} from './types/occupational';
 import { evaluateHeatRisk } from './utils/riskEngine';
 import { AppLocale } from './utils/i18n';
+import {
+  UAE_SITE_PRESETS,
+  fetchSiteWeatherData,
+  applySiteMeterOverride,
+  loadSiteSettings,
+  saveSiteSettings,
+} from './services/dataService';
+import {
+  computeRestAreaOccupancy,
+  detectDangerousConditions,
+  generateDeterministicScheduleBlocks,
+  validateScheduleBlocks,
+} from './services/complianceEngine';
+import { planCompliantSchedule } from './services/aiPlanner';
+import { appendAuditEntry, createAuditEntry } from './services/auditLog';
+import {
+  broadcastVoiceScheduleAlert,
+  exportScheduleComplianceCsv,
+  formatWhatsAppScheduleText,
+  stopVoiceScheduleAlert,
+  triggerCsvDownload,
+} from './services/alertService';
+import {
+  clearShadeRegistry,
+  fetchShadeRegistry,
+  parseCheckInQueryParams,
+  recordShadeCheckIn,
+} from './services/shadeRegistryService';
+import { estimateEnvironmentalHeatMetrics } from './services/wbgtCalculator';
+import {
+  DEFAULT_DEMO_INCIDENTS,
+  buildInitialReadinessState,
+  computeReadinessCompletion,
+  evaluateDynamicTriggers,
+  evaluateZoneAndPpeContext,
+  generateDeterministicAcclimatizationPlan,
+} from './services/coordinatorEngines';
 import { Header } from './components/Header';
+import { OfflineModeBanner } from './components/PWAInstallButton';
 import { WorkerView } from './components/WorkerView';
 import { RiderView } from './components/RiderView';
 import { SupervisorView } from './components/SupervisorView';
@@ -24,17 +81,121 @@ import { TeamPage } from './components/TeamPage';
 import { VoiceQaModal } from './components/VoiceQaModal';
 import { Footer } from './components/Footer';
 import { HeroBanner } from './components/HeroBanner';
-import { WifiOff, HardHat, Bike, Users, Mic } from 'lucide-react';
+import { WifiOff, HardHat, Bike, Users, Mic, ShieldCheck, Droplets, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
+
+const OFFLINE_OPS_CACHE_KEY = 'heatshield_ops_state_v1';
+
+interface CachedOpsState {
+  approvedPlan?: SchedulePlanResult;
+  checklist?: SiteReadinessChecklistState;
+  acclimatizationTags?: Record<string, AcclimatizationStatusTag>;
+  acclimatizationPlans?: Record<string, CrewAcclimatizationPlan>;
+  zoneAssignments?: Record<string, CrewZoneAssignment>;
+  hydrationAlerts?: HydrationAlertAuditRecord[];
+  incidents?: AnonymousIncidentRecord[];
+  auditLog?: AuditGovernanceEntry[];
+  siteRestCapacityCrews?: number;
+  firstAidersOnDuty?: number;
+}
+
+function loadCachedOpsState(): CachedOpsState {
+  try {
+    const raw = localStorage.getItem(OFFLINE_OPS_CACHE_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) as CachedOpsState;
+  } catch {
+    return {};
+  }
+}
 
 function isTeamPath(pathname: string): boolean {
   const normalized = pathname.replace(/\/+$/, '').toLowerCase();
   return normalized === '/team' || normalized === '/contact';
 }
 
+function buildInitialWeather(site: SitePreset): EnvWeatherState {
+  const nowIso = new Date().toISOString();
+  const hourly = Array.from({ length: 24 }, (_, h) => {
+    const temp = Number((30 + 11 * Math.max(0, Math.sin(((h - 6) / 14) * Math.PI))).toFixed(1));
+    const rh = Math.round(Math.max(30, 62 - (temp - 30) * 1.8));
+    const solar = h >= 6 && h <= 18 ? Math.round(880 * Math.sin(((h - 6) / 12) * Math.PI)) : 0;
+    const wind = 12;
+    const est = estimateEnvironmentalHeatMetrics({
+      airTempC: temp,
+      relativeHumidityPct: rh,
+      windSpeedKmh: wind,
+      solarRadiationWm2: solar,
+      exposure: 'sun',
+    });
+    return {
+      timeIso: `${nowIso.slice(0, 10)}T${String(h).padStart(2, '0')}:00`,
+      hourIndex: h,
+      hourLabel: `${String(h).padStart(2, '0')}:00`,
+      airTempC: temp,
+      relativeHumidityPct: rh,
+      windSpeedKmh: wind,
+      solarRadiationWm2: solar,
+      uvIndex: Number(((solar / 950) * 10.5).toFixed(1)),
+      ...est,
+    };
+  });
+  const hr = Math.max(0, Math.min(23, new Date().getHours()));
+  return {
+    site,
+    status: 'stale',
+    fetchedAtIso: nowIso,
+    lastUpdatedDisplay: 'Connecting...',
+    sourceLabel: 'Initializing Open-Meteo sync...',
+    current: hourly[hr],
+    hourly,
+  };
+}
+
+function buildInitialCoordinatorPlan(
+  weather: EnvWeatherState,
+  roster: CrewRosterRow[],
+  config: ComplianceConfig,
+  forceMiddaySeason: boolean,
+  siteRestCapacityCrews: number = 2,
+  firstAidersOnDuty: number = 2
+): SchedulePlanResult {
+  const blocks = generateDeterministicScheduleBlocks(roster, weather.hourly, config, {
+    forceMiddaySeason,
+  });
+  const validation = validateScheduleBlocks(blocks, config, { forceMiddaySeason });
+  const restOccupancy = computeRestAreaOccupancy(blocks, siteRestCapacityCrews, firstAidersOnDuty);
+  const dangerousConditions = detectDangerousConditions(blocks, roster);
+  return {
+    planId: 'plan-init',
+    generatedAtIso: new Date().toISOString(),
+    source: 'deterministic_fallback',
+    aiAttempted: false,
+    aiRejected: false,
+    aiRejectionReasons: [],
+    validatedByComplianceEngine: true,
+    overallComplianceStatus: validation.overallStatus,
+    complianceChecks: validation.checks,
+    riskDriversExplanation: `Live thermal estimation for ${weather.site.name} evaluates temperature (${weather.current.airTempC.toFixed(1)}°C), humidity (${weather.current.relativeHumidityPct}%), wind (${weather.current.windSpeedKmh} km/h), and solar load (${weather.current.solarRadiationWm2} W/m²).`,
+    whyThisSchedule:
+      'Enforces UAE MOHRE Midday Break Rule stoppage for direct-sun work (12:30–15:00) and scales hourly work-rest intervals and hydration to estimated WBGT.',
+    topTaskReorderingSuggestions: [
+      'Front-load heavy open-sun tasks into 06:00–09:30 cooler morning hours.',
+      'Pre-position shaded cooling shelters and chilled drinking water before 09:30.',
+    ],
+    blocks,
+    restOccupancy,
+    dangerousConditions,
+    approved: false,
+    diffFromPrevious: [],
+  };
+}
+
 export default function App() {
+  const initialSettings = useMemo(() => loadSiteSettings(), []);
+
   // Global Interface Locale (English / Dubai Arabic)
-  const [locale, setLocale] = useState<AppLocale>('en');
+  const [locale, setLocale] = useState<AppLocale>(initialSettings.locale);
 
   // Route state for dedicated /team (/contact) page vs landing & workspace
   const [isTeamPage, setIsTeamPage] = useState<boolean>(() =>
@@ -43,10 +204,168 @@ export default function App() {
 
   // Landing Page first screen -> "Continue as Guest" enters the full workspace
   const [hasEnteredApp, setHasEnteredApp] = useState(false);
-  const [currentRole, setCurrentRole] = useState<Role>('worker');
+  const [currentRole, setCurrentRole] = useState<Role>('supervisor');
 
   // Multilingual alert voice language
-  const [currentLang, setCurrentLang] = useState<SupportedLanguage>('en');
+  const [currentLang, setCurrentLang] = useState<SupportedLanguage>(
+    initialSettings.locale === 'ar' ? 'ar' : 'en'
+  );
+
+  // Site Coordinator Live Open-Meteo, Roster & Compliance State (Zero Personal Data)
+  const [selectedSiteId, setSelectedSiteId] = useState<string>(initialSettings.selectedSiteId);
+  const [customSite, setCustomSite] = useState<SitePreset>({
+    id: 'custom',
+    name: initialSettings.customName,
+    nameAr: initialSettings.customName,
+    emirate: 'Custom',
+    latitude: initialSettings.customLat,
+    longitude: initialSettings.customLon,
+    isCustom: true,
+  });
+  const [forceMiddaySeason, setForceMiddaySeason] = useState<boolean>(
+    initialSettings.forceMiddaySeason
+  );
+  const [roster, setRoster] = useState<CrewRosterRow[]>(initialSettings.roster);
+  const [complianceConfig, setComplianceConfig] = useState<ComplianceConfig>(
+    initialSettings.complianceConfig
+  );
+
+  const selectedSite = useMemo<SitePreset>(() => {
+    if (selectedSiteId === 'custom') return customSite;
+    return UAE_SITE_PRESETS.find((s) => s.id === selectedSiteId) || UAE_SITE_PRESETS[0];
+  }, [selectedSiteId, customSite]);
+
+  const [weather, setWeather] = useState<EnvWeatherState>(() => buildInitialWeather(selectedSite));
+  const [isRefreshingWeather, setIsRefreshingWeather] = useState(false);
+  const [simulateOffline, setSimulateOffline] = useState(false);
+
+  const cachedOps = useMemo(() => loadCachedOpsState(), []);
+
+  const [siteMeterOverride, setSiteMeterOverride] = useState<{
+    airTempC: number;
+    relativeHumidityPct: number;
+    manualWbgtC?: number | null;
+  } | null>(null);
+  const [siteRestCapacityCrews, setSiteRestCapacityCrews] = useState<number>(
+    () => cachedOps.siteRestCapacityCrews ?? 2
+  );
+  const [firstAidersOnDuty, setFirstAidersOnDuty] = useState<number>(
+    () => cachedOps.firstAidersOnDuty ?? 2
+  );
+
+  const [coordinatorPlan, setCoordinatorPlan] = useState<SchedulePlanResult>(() => {
+    if (cachedOps.approvedPlan && cachedOps.approvedPlan.blocks?.length > 0) {
+      return cachedOps.approvedPlan;
+    }
+    return buildInitialCoordinatorPlan(
+      buildInitialWeather(selectedSite),
+      roster,
+      complianceConfig,
+      forceMiddaySeason,
+      cachedOps.siteRestCapacityCrews ?? 2,
+      cachedOps.firstAidersOnDuty ?? 2
+    );
+  });
+  const [proactiveProposedPlan, setProactiveProposedPlan] = useState<SchedulePlanResult | null>(null);
+  const proactiveWarningKeyRef = useRef<string | null>(null);
+  const [isCoordinatorPlanning, setIsCoordinatorPlanning] = useState(false);
+  const [isVoiceAlertPlaying, setIsVoiceAlertPlaying] = useState(false);
+
+  // Extended 13-Feature Site/Crew State (Strictly Zero Individual Worker Data)
+  const [checklist, setChecklist] = useState<SiteReadinessChecklistState>(() =>
+    cachedOps.checklist?.items?.length ? cachedOps.checklist : buildInitialReadinessState()
+  );
+  const [acclimatizationTags, setAcclimatizationTags] = useState<Record<string, AcclimatizationStatusTag>>(
+    () => cachedOps.acclimatizationTags || { 'Crew-A': 'acclimatized', 'Crew-B': 'returning_after_leave', 'Crew-C': 'new_to_site' }
+  );
+  const [acclimatizationPlans, setAcclimatizationPlans] = useState<Record<string, CrewAcclimatizationPlan>>(
+    () => cachedOps.acclimatizationPlans || {}
+  );
+  const [isGeneratingAcclim, setIsGeneratingAcclim] = useState(false);
+
+  const [zoneAssignments, setZoneAssignments] = useState<Record<string, CrewZoneAssignment>>(
+    () =>
+      cachedOps.zoneAssignments || {
+        'Crew-A': { crew_id: 'Crew-A', zoneType: 'open_ground', darkPpe: false, reflectiveSurfaces: false },
+        'Crew-B': { crew_id: 'Crew-B', zoneType: 'rooftop', darkPpe: true, reflectiveSurfaces: false },
+        'Crew-C': { crew_id: 'Crew-C', zoneType: 'trench', darkPpe: false, reflectiveSurfaces: true },
+      }
+  );
+
+  const [hydrationAlerts, setHydrationAlerts] = useState<HydrationAlertAuditRecord[]>(
+    () => cachedOps.hydrationAlerts || []
+  );
+  const [activeHydrationBanner, setActiveHydrationBanner] = useState<HydrationAlertAuditRecord | null>(null);
+
+  const [incidents, setIncidents] = useState<AnonymousIncidentRecord[]>(
+    () => (cachedOps.incidents && cachedOps.incidents.length > 0 ? cachedOps.incidents : DEFAULT_DEMO_INCIDENTS)
+  );
+
+  const [auditLog, setAuditLog] = useState<AuditGovernanceEntry[]>(
+    () =>
+      cachedOps.auditLog || [
+        createAuditEntry({
+          idPrefix: 'audit-init',
+          planId: 'plan-init',
+          aiSuggestionSummary: 'Deterministic UAE baseline schedule generated for Crews A, B, C.',
+          complianceVerdict: 'Compliant',
+          humanDecision: 'Edited',
+          details: 'Initial baseline schedule ready for coordinator review before sending crew alerts.',
+        }),
+      ]
+  );
+
+  // Rest Station QR & Shady Area Registry State (Zero PII)
+  const [shadeRegistry, setShadeRegistry] = useState<ShadeCheckInRecord[]>([]);
+  const [isRefreshingShadeRegistry, setIsRefreshingShadeRegistry] = useState(false);
+  const [scannedStation, setScannedStation] = useState<RestStationConfig | null>(null);
+  const [lastShadeCheckIn, setLastShadeCheckIn] = useState<ShadeCheckInRecord | null>(null);
+  const qrCheckInHandledRef = useRef(false);
+
+  // Persist ONLY site-level operational settings & offline schedule cache in localStorage
+  useEffect(() => {
+    saveSiteSettings({
+      selectedSiteId,
+      customLat: customSite.latitude,
+      customLon: customSite.longitude,
+      customName: customSite.name,
+      locale,
+      forceMiddaySeason,
+      roster,
+      complianceConfig,
+    });
+  }, [selectedSiteId, customSite, locale, forceMiddaySeason, roster, complianceConfig]);
+
+  useEffect(() => {
+    try {
+      const payload: CachedOpsState = {
+        approvedPlan: coordinatorPlan,
+        checklist,
+        acclimatizationTags,
+        acclimatizationPlans,
+        zoneAssignments,
+        hydrationAlerts: hydrationAlerts.slice(0, 30),
+        incidents: incidents.slice(0, 40),
+        auditLog: auditLog.slice(0, 40),
+        siteRestCapacityCrews,
+        firstAidersOnDuty,
+      };
+      localStorage.setItem(OFFLINE_OPS_CACHE_KEY, JSON.stringify(payload));
+    } catch {
+      // Ignore quota errors cleanly
+    }
+  }, [
+    coordinatorPlan,
+    checklist,
+    acclimatizationTags,
+    acclimatizationPlans,
+    zoneAssignments,
+    hydrationAlerts,
+    incidents,
+    auditLog,
+    siteRestCapacityCrews,
+    firstAidersOnDuty,
+  ]);
 
   // Set locale specifically (EN or AR)
   const handleSetLocale = (newLocale: AppLocale) => {
@@ -71,19 +390,18 @@ export default function App() {
   const [sensorStatusMessage, setSensorStatusMessage] = useState<string | undefined>();
   const [showSensorFailBanner, setShowSensorFailBanner] = useState(false);
 
-  // Environmental parameters (Simulated / Live)
+  // Environmental parameters (Synced with live Open-Meteo & interactive demo controls)
   const [airTemp, setAirTemp] = useState<number>(38.4);
   const [humidity, setHumidity] = useState<number>(52);
   const [rawGlobeTemp, setRawGlobeTemp] = useState<number | null>(45.4);
   const [sunExposure, setSunExposure] = useState<SunExposure>('full');
 
-  // Workload and Modifiers
+  // Workload and Modifiers (strictly non-PII environmental/task settings)
   const [workload, setWorkload] = useState<WorkloadLevel>('Moderate');
   const [acclimatized, setAcclimatized] = useState(true);
   const [heavyPPE, setHeavyPPE] = useState(false);
   const [exposureHours, setExposureHours] = useState(3);
   const [isNewWorker, setIsNewWorker] = useState(false);
-  const [symptoms, setSymptoms] = useState<string[]>([]);
   const [isMiddayBanSimulated, setIsMiddayBanSimulated] = useState(false);
 
   // Interactive Hydration Tracker state (shared across Worker & Rider views)
@@ -111,6 +429,115 @@ export default function App() {
     setWaterMl((prev) => Math.max(0, prev - ml));
     setHydrationStreak((prev) => Math.max(0, prev - 1));
   };
+
+  // Coordinator Planner Runner + Audit Trail Logger
+  const runCoordinatorPlanner = useCallback(
+    async (
+      targetWeather: EnvWeatherState,
+      targetRoster: CrewRosterRow[],
+      targetConfig: ComplianceConfig,
+      middayActive: boolean,
+      prevPlan?: SchedulePlanResult | null,
+      forceMockAiViolation: boolean = false
+    ) => {
+      setIsCoordinatorPlanning(true);
+      try {
+        const nextPlan = await planCompliantSchedule({
+          weather: targetWeather,
+          roster: targetRoster,
+          config: targetConfig,
+          complianceOptions: { forceMiddaySeason: middayActive },
+          previousPlan: prevPlan,
+          forceMockAiViolation,
+          siteRestCapacityCrews,
+          firstAidersOnDuty,
+          zoneAssignments,
+        });
+        setCoordinatorPlan(nextPlan);
+        const entry = createAuditEntry({
+          planId: nextPlan.planId,
+          aiSuggestionSummary:
+            nextPlan.source === 'gemini'
+              ? `Gemini AI drafted ${nextPlan.blocks.length} hourly crew blocks for ${targetWeather.site.name}.`
+              : nextPlan.aiRejected
+              ? `AI draft rejected (${nextPlan.aiRejectionReasons[0] || 'Rule conflict'}); deterministic fallback applied.`
+              : `Deterministic schedule generated for ${targetWeather.site.name}.`,
+          complianceVerdict: nextPlan.overallComplianceStatus,
+          humanDecision: nextPlan.aiRejected ? 'Rejected / Replaced' : 'Edited',
+          details: nextPlan.whyThisSchedule,
+        });
+        setAuditLog((prev) => appendAuditEntry(prev, entry, 40));
+      } finally {
+        setIsCoordinatorPlanning(false);
+      }
+    },
+    [siteRestCapacityCrews, firstAidersOnDuty, zoneAssignments]
+  );
+
+  const refreshLiveWeather = useCallback(
+    async (
+      siteToFetch: SitePreset,
+      offlineMode: boolean,
+      triggerReplan: boolean,
+      overrideReading?: { airTempC: number; relativeHumidityPct: number; manualWbgtC?: number | null } | null
+    ) => {
+      setIsRefreshingWeather(true);
+      try {
+        const fetchedWeather = await fetchSiteWeatherData(siteToFetch, {
+          simulateOffline: offlineMode,
+        });
+        const effectiveOverride =
+          overrideReading !== undefined ? overrideReading : siteMeterOverride;
+        const nextWeather = effectiveOverride
+          ? applySiteMeterOverride(fetchedWeather, effectiveOverride)
+          : fetchedWeather;
+        setWeather(nextWeather);
+        setAirTemp(nextWeather.current.airTempC);
+        setHumidity(nextWeather.current.relativeHumidityPct);
+        setRawGlobeTemp(nextWeather.current.globeTempEstimatedC);
+        if (triggerReplan) {
+          await runCoordinatorPlanner(
+            nextWeather,
+            roster,
+            complianceConfig,
+            forceMiddaySeason,
+            coordinatorPlan
+          );
+        }
+      } finally {
+        setIsRefreshingWeather(false);
+      }
+    },
+    [roster, complianceConfig, forceMiddaySeason, coordinatorPlan, runCoordinatorPlanner, siteMeterOverride]
+  );
+
+  // Initial live Open-Meteo load + AI schedule plan on mount
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setIsRefreshingWeather(true);
+      const live = await fetchSiteWeatherData(selectedSite, { simulateOffline });
+      if (!active) return;
+      setWeather(live);
+      setAirTemp(live.current.airTempC);
+      setHumidity(live.current.relativeHumidityPct);
+      setRawGlobeTemp(live.current.globeTempEstimatedC);
+      setIsRefreshingWeather(false);
+      await runCoordinatorPlanner(live, roster, complianceConfig, forceMiddaySeason, null);
+    })();
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auto-refresh live conditions every 10 minutes (600,000 ms)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void refreshLiveWeather(selectedSite, simulateOffline, false);
+    }, 600_000);
+    return () => clearInterval(timer);
+  }, [selectedSite, simulateOffline, refreshLiveWeather]);
 
   // 60-Second Heat-Wave Scenario Ramp state
   const [isHeatWaveRunning, setIsHeatWaveRunning] = useState(false);
@@ -164,18 +591,17 @@ export default function App() {
     heavyPPE,
     exposureHours,
     isNewWorker,
-    symptoms,
+    symptoms: [],
     forceMiddayBan: isMiddayBanSimulated,
   });
 
   const prevRiskLevelRef = useRef<RiskLevel>(currentEvaluation.riskLevel);
   const prevMiddayBanRef = useRef<boolean>(currentEvaluation.isMiddayBanActive);
-  const prevSymptomsKeyRef = useRef<string>(symptoms.join(','));
   const [isAiLoading, setIsAiLoading] = useState(false);
 
   // Initial Gemini heat advice with authentic Dubai Arabic
   const [advice, setAdvice] = useState<GeminiHeatAdvice>({
-    explanation: `Calculated WBGT is ${currentEvaluation.wbgt.toFixed(1)}°C driven by ambient temperature (${airTemp.toFixed(1)}°C), relative humidity (${humidity}%), and direct solar radiant heat. Workload threshold is adjusted for safety.`,
+    explanation: `Estimated WBGT is ${currentEvaluation.wbgt.toFixed(1)}°C driven by ambient temperature (${airTemp.toFixed(1)}°C), relative humidity (${humidity}%), and direct solar radiant heat. Workload threshold is adjusted for safety.`,
     recommended_actions: [
       currentEvaluation.riskLevel === 'Critical'
         ? 'Stop outdoor work immediately and report to cool zone.'
@@ -185,7 +611,7 @@ export default function App() {
     ],
     level_suggestion: currentEvaluation.riskLevel,
     alert_text: {
-      en: 'Heat risk is increasing. Please pause work, move to a shaded or cooled area, and inform your supervisor.',
+      en: 'Heat risk is increasing. Please pause work, move to a shaded or cooled area, and inform your coordinator.',
       ar: 'خطر الإجهاد الحراري في تصاعد. يرجى التوقف عن العمل المكشوف، التوجه إلى منطقة مظللة ومكيفة، وتناول الماء البارد فوراً.',
       hi: 'गर्मी का जोखिम बढ़ रहा है। कृपया काम रोकें, छायादार या ठंडे स्थान पर जाएं और अपने सुपरवाइजर को बताएं।',
       ml: 'ചൂട് കൂടുന്നു. ദയവായി ജോലി നിർത്തി തണലിലേക്ക് മാറുക, ധാരാളം വെള്ളം കുടിക്കുക, സൂപ്പർവൈസറെ അറിയിക്കുക.',
@@ -198,11 +624,11 @@ export default function App() {
   // SmartShift Plan state initialized with verified default plan
   const [smartShiftPlan, setSmartShiftPlan] = useState<SmartShiftPlan>({
     rationale:
-      'To mitigate severe afternoon thermal strain while strictly abiding by UAE ministerial decree, heavy physical activities are rescheduled to the early morning (06:00-09:30) and late afternoon (16:00-18:00). All outdoor work is legally halted between 12:30 and 15:00.',
+      'To mitigate severe afternoon thermal strain while strictly abiding by UAE MOHRE Midday Break Rule, heavy physical activities are rescheduled to the early morning (06:00-09:30) and late afternoon (16:00-18:00). All open-sun outdoor work is halted between 12:30 and 15:00.',
     timeline: [
       {
         timeSlot: '06:00 - 09:30',
-        label: 'Cool Early Window (WBGT ~25°C)',
+        label: 'Cool Early Window (Est. WBGT ~25°C)',
         crewActions: {
           'Crew A': 'Steel rebar assembly in shaded yard',
           'Crew B': 'Heavy scaffolding structural erection',
@@ -213,7 +639,7 @@ export default function App() {
       },
       {
         timeSlot: '09:30 - 12:30',
-        label: 'Escalating Heat Window (WBGT ~29°C - 33°C)',
+        label: 'Escalating Heat Window (Est. WBGT ~29°C - 33°C)',
         crewActions: {
           'Crew A': 'Light prefab alignment with portable mist fans',
           'Crew B': 'Crew rotation: 30 min scaffolding / 15 min shade',
@@ -224,30 +650,30 @@ export default function App() {
       },
       {
         timeSlot: '12:30 - 15:00',
-        label: 'UAE LEGAL MIDDAY BAN (MANDATORY STOP)',
+        label: 'UAE MOHRE MIDDAY BREAK (MANDATORY STOP)',
         crewActions: {
           'Crew A': 'MANDATORY REST in air-conditioned rest station',
           'Crew B': 'MANDATORY REST in air-conditioned rest station',
           'Crew C': 'MANDATORY REST in air-conditioned rest station',
         },
-        risk: 'Prohibited - Legal Stop',
+        risk: 'Prohibited - Midday Stop',
         coolingProtocol: 'Full site evacuation from open sun. AC cooling stations open.',
         isMiddayBan: true,
       },
       {
         timeSlot: '15:00 - 16:30',
-        label: 'Post-Ban Re-entry (WBGT ~31°C)',
+        label: 'Post-Ban Re-entry (Est. WBGT ~31°C)',
         crewActions: {
           'Crew A': 'Site inspection and tool prep in shaded bays',
           'Crew B': 'Light material logistics and inventory check',
           'Crew C': 'Pre-pour inspection under temporary awnings',
         },
         risk: 'Moderate',
-        coolingProtocol: 'Buddy hydration check-in; ice towel reapplication',
+        coolingProtocol: 'Crew hydration check-in; ice towel reapplication',
       },
       {
         timeSlot: '16:30 - 18:00',
-        label: 'Evening Cooling Window (WBGT ~27°C)',
+        label: 'Evening Cooling Window (Est. WBGT ~27°C)',
         crewActions: {
           'Crew A': 'Final welding inspection & site cleanup',
           'Crew B': 'Complete remaining scaffolding fastening',
@@ -258,9 +684,9 @@ export default function App() {
       },
     ],
     adherenceNotes: [
-      '100% compliant with UAE MoHRE Midday Break regulations (12:30 to 15:00).',
-      'Crew C (Very Heavy) exposure capped at 90 continuous minutes before mandated AC recovery.',
-      'Buddy-system pairs implemented across all 3 crews.',
+      'Aligned with UAE MOHRE Midday Break Rule (12:30 to 15:00, 15 Jun – 15 Sep).',
+      'Heavy direct-sun tasks shifted to cooler morning windows.',
+      'Crew-level work-rest intervals and hydration stations active.',
     ],
   });
   const [isPlanLoading, setIsPlanLoading] = useState(false);
@@ -283,7 +709,7 @@ export default function App() {
             acclimatized,
             exposureHours,
             riskLevel: overrideLevel || currentEvaluation.riskLevel,
-            symptoms,
+            symptoms: [],
             isMiddayBanActive: currentEvaluation.isMiddayBanActive,
           }),
         });
@@ -308,24 +734,19 @@ export default function App() {
       heavyPPE,
       acclimatized,
       exposureHours,
-      symptoms,
     ]
   );
-
-  const symptomsKey = symptoms.join(',');
 
   useEffect(() => {
     if (
       currentEvaluation.riskLevel !== prevRiskLevelRef.current ||
-      currentEvaluation.isMiddayBanActive !== prevMiddayBanRef.current ||
-      symptomsKey !== prevSymptomsKeyRef.current
+      currentEvaluation.isMiddayBanActive !== prevMiddayBanRef.current
     ) {
       prevRiskLevelRef.current = currentEvaluation.riskLevel;
       prevMiddayBanRef.current = currentEvaluation.isMiddayBanActive;
-      prevSymptomsKeyRef.current = symptomsKey;
       fetchGeminiAdvice(currentEvaluation.riskLevel);
     }
-  }, [currentEvaluation.riskLevel, currentEvaluation.isMiddayBanActive, symptomsKey, fetchGeminiAdvice]);
+  }, [currentEvaluation.riskLevel, currentEvaluation.isMiddayBanActive, fetchGeminiAdvice]);
 
   // Request SmartShift plan from Gemini on demand
   const handleRequestSmartShiftPlan = async (districtName?: string) => {
@@ -338,7 +759,7 @@ export default function App() {
           currentWbgt: currentEvaluation.wbgt,
           crews: ['Crew A', 'Crew B', 'Crew C'],
           district: districtName,
-          forecastSummary: `Ambient air ${airTemp}°C, humidity ${humidity}%, WBGT ${currentEvaluation.wbgt}°C in ${districtName ? `${districtName}, Dubai` : 'Dubai'}.`,
+          forecastSummary: `Ambient air ${airTemp}°C, humidity ${humidity}%, estimated WBGT ${currentEvaluation.wbgt}°C in ${districtName ? `${districtName}, UAE` : 'UAE'}.`,
         }),
       });
       if (response.ok) {
@@ -387,7 +808,6 @@ export default function App() {
         }
       } catch (err: any) {
         if (isMounted) {
-          console.warn('Sensor fetch failed:', err);
           setIsLiveMode(false);
           setShowSensorFailBanner(true);
           setSensorStatusMessage(`Poll error: ${err.message || 'Connection failed'}. Switched to SIMULATED.`);
@@ -452,21 +872,9 @@ export default function App() {
     setHeavyPPE(false);
     setExposureHours(2);
     setIsNewWorker(false);
-    setSymptoms([]);
     setIsMiddayBanSimulated(false);
     setShowSensorFailBanner(false);
     setSensorStatusMessage('Reset to safe baseline parameters.');
-  };
-
-  // Symptom toggling
-  const handleToggleSymptom = (sympId: string) => {
-    if (sympId === 'none') {
-      setSymptoms([]);
-      return;
-    }
-    setSymptoms((prev) =>
-      prev.includes(sympId) ? prev.filter((s) => s !== sympId) : [...prev, sympId]
-    );
   };
 
   // Record alert feedback
@@ -492,6 +900,540 @@ export default function App() {
       };
     });
   };
+
+  // Coordinator Workflow Handlers
+  const handleSelectPresetSite = async (siteId: string) => {
+    setSelectedSiteId(siteId);
+    const nextSite = UAE_SITE_PRESETS.find((s) => s.id === siteId) || UAE_SITE_PRESETS[0];
+    await refreshLiveWeather(nextSite, simulateOffline, true);
+  };
+
+  const handleApplyCustomCoords = async (name: string, lat: number, lon: number) => {
+    const nextCustom: SitePreset = {
+      id: 'custom',
+      name,
+      nameAr: name,
+      emirate: 'Custom',
+      latitude: lat,
+      longitude: lon,
+      isCustom: true,
+    };
+    setCustomSite(nextCustom);
+    setSelectedSiteId('custom');
+    await refreshLiveWeather(nextCustom, simulateOffline, true);
+  };
+
+  const handleToggleOffline = async (val: boolean) => {
+    setSimulateOffline(val);
+    await refreshLiveWeather(selectedSite, val, false);
+  };
+
+  const handleChangeRoster = (rows: CrewRosterRow[], triggerReplan = true) => {
+    setRoster(rows);
+    const taggedUpdates: Record<string, AcclimatizationStatusTag> = {};
+    for (const r of rows) {
+      if (r.crewTag) {
+        taggedUpdates[r.crew_id] = r.crewTag;
+      }
+    }
+    if (Object.keys(taggedUpdates).length > 0) {
+      setAcclimatizationTags((prev) => ({ ...prev, ...taggedUpdates }));
+    }
+    if (triggerReplan) {
+      void runCoordinatorPlanner(weather, rows, complianceConfig, forceMiddaySeason, coordinatorPlan);
+    }
+  };
+
+  const handleApplySiteMeterReading = (reading: {
+    airTempC: number;
+    relativeHumidityPct: number;
+    manualWbgtC?: number | null;
+  }) => {
+    setSiteMeterOverride(reading);
+    const nextWeather = applySiteMeterOverride(weather, reading);
+    setWeather(nextWeather);
+    setAirTemp(nextWeather.current.airTempC);
+    setHumidity(nextWeather.current.relativeHumidityPct);
+    setRawGlobeTemp(nextWeather.current.globeTempEstimatedC);
+    const meterEntry = createAuditEntry({
+      idPrefix: 'audit-meter',
+      planId: coordinatorPlan.planId,
+      aiSuggestionSummary: `On-site meter entered: ${reading.airTempC.toFixed(1)}°C, ${Math.round(
+        reading.relativeHumidityPct
+      )}% RH${reading.manualWbgtC != null ? `, Meter WBGT ${reading.manualWbgtC.toFixed(1)}°C` : ''}.`,
+      complianceVerdict: coordinatorPlan.overallComplianceStatus,
+      humanDecision: 'Edited',
+      details: 'Switched site environmental source from Regional forecast to Site-measured meter and re-evaluated shift blocks.',
+    });
+    setAuditLog((prev) => appendAuditEntry(prev, meterEntry, 40));
+    void runCoordinatorPlanner(nextWeather, roster, complianceConfig, forceMiddaySeason, coordinatorPlan);
+  };
+
+  const handleClearSiteMeterReading = () => {
+    setSiteMeterOverride(null);
+    void refreshLiveWeather(selectedSite, simulateOffline, true, null);
+  };
+
+  const handleChangeSiteResources = (capacityCrews: number, firstAiders: number) => {
+    const safeCap = Math.max(1, capacityCrews);
+    const safeAiders = Math.max(0, firstAiders);
+    setSiteRestCapacityCrews(safeCap);
+    setFirstAidersOnDuty(safeAiders);
+    setCoordinatorPlan((prev) => ({
+      ...prev,
+      restOccupancy: computeRestAreaOccupancy(prev.blocks, safeCap, safeAiders),
+    }));
+  };
+
+  const handleUpdateScheduleBlock = (updatedBlock: ShiftBlockPlan) => {
+    const nextBlocks = coordinatorPlan.blocks.map((b) =>
+      b.id === updatedBlock.id ? updatedBlock : b
+    );
+    const revalidation = validateScheduleBlocks(nextBlocks, complianceConfig, {
+      forceMiddaySeason,
+    });
+    const restOccupancy = computeRestAreaOccupancy(nextBlocks, siteRestCapacityCrews, firstAidersOnDuty);
+    const dangerousConditions = detectDangerousConditions(nextBlocks, roster, zoneAssignments);
+    setCoordinatorPlan((prev) => ({
+      ...prev,
+      blocks: nextBlocks,
+      restOccupancy,
+      dangerousConditions,
+      overallComplianceStatus: revalidation.overallStatus,
+      complianceChecks: revalidation.checks,
+      approved: false,
+    }));
+    const editEntry = createAuditEntry({
+      idPrefix: 'audit-edit',
+      planId: coordinatorPlan.planId,
+      aiSuggestionSummary: `Crew ${updatedBlock.crew_id} @ ${updatedBlock.timeRange}: ${updatedBlock.taskType}`,
+      complianceVerdict: revalidation.overallStatus,
+      humanDecision: 'Edited',
+      details: `Coordinator updated ${updatedBlock.crew_id} (${updatedBlock.workMinutes}m work / ${updatedBlock.restMinutes}m rest, ${updatedBlock.exposure}). Approval reset until re-approved.`,
+    });
+    setAuditLog((prev) => appendAuditEntry(prev, editEntry, 40));
+  };
+
+  const handleUpdateComplianceConfig = (updated: ComplianceConfig) => {
+    setComplianceConfig(updated);
+    const revalidation = validateScheduleBlocks(coordinatorPlan.blocks, updated, {
+      forceMiddaySeason,
+    });
+    setCoordinatorPlan((prev) => ({
+      ...prev,
+      overallComplianceStatus: revalidation.overallStatus,
+      complianceChecks: revalidation.checks,
+    }));
+  };
+
+  const handleToggleForceMiddaySeason = (val: boolean) => {
+    setForceMiddaySeason(val);
+    void runCoordinatorPlanner(weather, roster, complianceConfig, val, coordinatorPlan);
+  };
+
+  // Extended Feature Handlers (Strictly Crew/Site-Level Only)
+  const zoneCalculations = useMemo(() => {
+    const baseWbgt = weather.current.wbgtEstimatedC;
+    const hr = weather.current.hourIndex;
+    const evals = roster.map((row) => {
+      const assign = zoneAssignments[row.crew_id] || {
+        crew_id: row.crew_id,
+        zoneType: 'open_ground' as const,
+        darkPpe: false,
+        reflectiveSurfaces: false,
+      };
+      return evaluateZoneAndPpeContext(assign, row.workload, hr, baseWbgt, complianceConfig);
+    });
+    const maxOffset = evals.length > 0 ? Math.max(...evals.map((e) => e.totalOffsetC)) : 0;
+    const hottest = evals.find((e) => e.totalOffsetC === maxOffset);
+    const selectedZoneSummary = hottest
+      ? `${hottest.transparentFormulaNote}`
+      : 'Standard open-ground zone baseline';
+    return { maxOffset, selectedZoneSummary };
+  }, [roster, zoneAssignments, weather.current.wbgtEstimatedC, weather.current.hourIndex, complianceConfig]);
+
+  const triggerEval = useMemo(
+    () =>
+      evaluateDynamicTriggers(
+        weather,
+        complianceConfig,
+        zoneCalculations.maxOffset,
+        forceMiddaySeason
+      ),
+    [weather, complianceConfig, zoneCalculations.maxOffset, forceMiddaySeason]
+  );
+
+  // Proactive 3-hour look-ahead auto-replan proposal (never overrides approved plan or alerts crews without coordinator decision)
+  useEffect(() => {
+    if (!triggerEval.lookAheadWarning || weather.lastUpdatedDisplay === 'Connecting...') {
+      return;
+    }
+    const warningKey = `${selectedSite.id}|${triggerEval.lookAheadWarning}|${weather.current.wbgtEstimatedC.toFixed(1)}`;
+    if (proactiveWarningKeyRef.current === warningKey) {
+      return;
+    }
+    proactiveWarningKeyRef.current = warningKey;
+    let active = true;
+    (async () => {
+      const proposal = await planCompliantSchedule({
+        weather,
+        roster,
+        config: complianceConfig,
+        complianceOptions: { forceMiddaySeason },
+        previousPlan: coordinatorPlan,
+        siteRestCapacityCrews,
+        firstAidersOnDuty,
+        zoneAssignments,
+      });
+      if (!active) return;
+      setProactiveProposedPlan(proposal);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [
+    triggerEval.lookAheadWarning,
+    selectedSite.id,
+    weather,
+    roster,
+    complianceConfig,
+    forceMiddaySeason,
+    coordinatorPlan,
+    siteRestCapacityCrews,
+    firstAidersOnDuty,
+    zoneAssignments,
+  ]);
+
+  const handleAcceptProactivePlan = () => {
+    if (!proactiveProposedPlan) return;
+    const appliedPlan: SchedulePlanResult = {
+      ...proactiveProposedPlan,
+      approved: true,
+      approvedAtIso: new Date().toISOString(),
+    };
+    setCoordinatorPlan(appliedPlan);
+    setProactiveProposedPlan(null);
+    const acceptEntry = createAuditEntry({
+      idPrefix: 'audit-proactive-accept',
+      planId: appliedPlan.planId,
+      aiSuggestionSummary: `Proactive 3-hour escalation schedule applied (${appliedPlan.blocks.length} blocks).`,
+      complianceVerdict: appliedPlan.overallComplianceStatus,
+      humanDecision: 'Approved',
+      details:
+        appliedPlan.diffFromPrevious.length > 0
+          ? `Coordinator reviewed and approved proactive look-ahead schedule: ${appliedPlan.diffFromPrevious.join('; ')}`
+          : 'Coordinator reviewed and approved proactive look-ahead schedule.',
+    });
+    setAuditLog((prev) => appendAuditEntry(prev, acceptEntry, 40));
+  };
+
+  const handleRejectProactivePlan = () => {
+    if (!proactiveProposedPlan) return;
+    const rejectEntry = createAuditEntry({
+      idPrefix: 'audit-proactive-reject',
+      planId: proactiveProposedPlan.planId,
+      aiSuggestionSummary: `Proactive 3-hour escalation draft dismissed (${proactiveProposedPlan.blocks.length} blocks).`,
+      complianceVerdict: proactiveProposedPlan.overallComplianceStatus,
+      humanDecision: 'Rejected / Replaced',
+      details: 'Coordinator dismissed proactive 3-hour look-ahead draft and retained existing schedule.',
+    });
+    setAuditLog((prev) => appendAuditEntry(prev, rejectEntry, 40));
+    setProactiveProposedPlan(null);
+  };
+
+  const handleRejectCoordinatorPlan = () => {
+    setCoordinatorPlan((prev) => ({
+      ...prev,
+      approved: false,
+      approvedAtIso: undefined,
+    }));
+    const rejectEntry = createAuditEntry({
+      idPrefix: 'audit-reject',
+      planId: coordinatorPlan.planId,
+      aiSuggestionSummary: `${coordinatorPlan.blocks.length} hourly crew schedule blocks (${coordinatorPlan.source}).`,
+      complianceVerdict: coordinatorPlan.overallComplianceStatus,
+      humanDecision: 'Rejected / Replaced',
+      details: 'Coordinator rejected current schedule draft. Crew broadcasts remain locked until a revised plan is approved.',
+    });
+    setAuditLog((prev) => appendAuditEntry(prev, rejectEntry, 40));
+  };
+
+  const handleToggleChecklistItem = (itemId: string) => {
+    setChecklist((prev) => {
+      const items = prev.items.map((item) =>
+        item.id === itemId ? { ...item, checked: !item.checked } : item
+      );
+      return {
+        updatedAtIso: new Date().toISOString(),
+        items,
+        completionPercent: computeReadinessCompletion(items),
+      };
+    });
+  };
+
+  const handleUpdateChecklistNote = (itemId: string, note: string) => {
+    setChecklist((prev) => ({
+      ...prev,
+      updatedAtIso: new Date().toISOString(),
+      items: prev.items.map((item) => (item.id === itemId ? { ...item, note } : item)),
+    }));
+  };
+
+  const handleChangeAcclimatizationTag = (crewId: string, tag: AcclimatizationStatusTag) => {
+    setAcclimatizationTags((prev) => ({ ...prev, [crewId]: tag }));
+  };
+
+  const handleGenerateAcclimatizationPlan = async (crewId: string) => {
+    const status = acclimatizationTags[crewId] || 'new_to_site';
+    const crewRow = roster.find((r) => r.crew_id === crewId);
+    setIsGeneratingAcclim(true);
+    try {
+      const res = await fetch('/api/gemini/acclimatization-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          crew_id: crewId,
+          status,
+          taskType: crewRow?.taskType || 'Outdoor operations',
+          siteName: selectedSite.name,
+          wbgtEstimatedC: weather.current.wbgtEstimatedC,
+        }),
+      });
+      if (res.ok) {
+        const plan = (await res.json()) as CrewAcclimatizationPlan;
+        setAcclimatizationPlans((prev) => ({ ...prev, [crewId]: plan }));
+        const acclimEntry = createAuditEntry({
+          idPrefix: 'audit-acclim',
+          planId: coordinatorPlan.planId,
+          aiSuggestionSummary: `Generated ${plan.days.length}-day gradual ramp for ${crewId} (${status}).`,
+          complianceVerdict: coordinatorPlan.overallComplianceStatus,
+          humanDecision: 'Edited',
+          details: plan.disclaimer,
+        });
+        setAuditLog((prev) => appendAuditEntry(prev, acclimEntry, 40));
+        return;
+      }
+    } catch {
+      // Fallback below
+    } finally {
+      setIsGeneratingAcclim(false);
+    }
+    const fallback = generateDeterministicAcclimatizationPlan(crewId, status, complianceConfig);
+    setAcclimatizationPlans((prev) => ({ ...prev, [crewId]: fallback }));
+  };
+
+  const handleUpdateZoneAssignment = (crewId: string, updated: CrewZoneAssignment) => {
+    setZoneAssignments((prev) => ({ ...prev, [crewId]: updated }));
+  };
+
+  const handlePushHydrationAlert = async (
+    payload: Omit<HydrationAlertAuditRecord, 'id' | 'sentAtIso' | 'status'>,
+    channel: 'banner' | 'voice' | 'whatsapp'
+  ) => {
+    if (!coordinatorPlan.approved) {
+      return; // Mandatory human approval gate
+    }
+    const newRecord: HydrationAlertAuditRecord = {
+      ...payload,
+      id: `hyd-${Date.now()}`,
+      sentAtIso: new Date().toISOString(),
+      channel,
+      status: 'sent',
+    };
+    setHydrationAlerts((prev) => [newRecord, ...prev].slice(0, 30));
+    if (channel === 'banner') {
+      setActiveHydrationBanner(newRecord);
+    } else if (channel === 'voice') {
+      try {
+        window.speechSynthesis?.cancel();
+        const utter = new SpeechSynthesisUtterance(
+          locale === 'ar' ? newRecord.messages.ar : newRecord.messages.en
+        );
+        utter.lang = locale === 'ar' ? 'ar-AE' : 'en-US';
+        window.speechSynthesis?.speak(utter);
+      } catch {
+        // Non-blocking fallback
+      }
+    } else if (channel === 'whatsapp') {
+      try {
+        const fullText = `${newRecord.messages.en}\n\n${newRecord.messages.ar}\n\n${newRecord.messages.hi}\n\n${newRecord.messages.ur}`;
+        await navigator.clipboard.writeText(fullText);
+      } catch {
+        // Ignore clipboard errors
+      }
+    }
+    const hydEntry = createAuditEntry({
+      idPrefix: 'audit-hyd',
+      planId: coordinatorPlan.planId,
+      aiSuggestionSummary: `Hydration cadence ${newRecord.intervalMinutes}m (${newRecord.mlPerBreak}ml) for ${newRecord.crew_id}.`,
+      complianceVerdict: coordinatorPlan.overallComplianceStatus,
+      humanDecision: 'Approved',
+      details: `Coordinator pushed ${channel.toUpperCase()} reminder to ${newRecord.crew_id} under Level: ${newRecord.actionLevel}.`,
+    });
+    setAuditLog((prev) => appendAuditEntry(prev, hydEntry, 40));
+  };
+
+  const handleAcknowledgeHydrationAlert = (alertId: string) => {
+    const nowIso = new Date().toISOString();
+    setHydrationAlerts((prev) =>
+      prev.map((a) =>
+        a.id === alertId ? { ...a, status: 'acknowledged', acknowledgedAtIso: nowIso } : a
+      )
+    );
+    if (activeHydrationBanner?.id === alertId) {
+      setActiveHydrationBanner(null);
+    }
+  };
+
+  const handleLogIncident = async (inc: Omit<AnonymousIncidentRecord, 'id'>) => {
+    const optimistic: AnonymousIncidentRecord = {
+      ...inc,
+      id: `inc-${Date.now()}`,
+    };
+    setIncidents((prev) => [optimistic, ...prev]);
+    try {
+      await fetch('/api/incidents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(inc),
+      });
+    } catch {
+      // Cached locally cleanly for offline resilience
+    }
+  };
+
+  const handleCopyWhatsApp = async (): Promise<boolean> => {
+    const text = formatWhatsAppScheduleText(coordinatorPlan, weather, roster, locale);
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleExportComplianceCsv = () => {
+    const csv = exportScheduleComplianceCsv(coordinatorPlan, weather);
+    triggerCsvDownload(csv, `heatshield-${weather.site.id}-schedule.csv`);
+  };
+
+  const handleToggleVoiceAlert = () => {
+    if (isVoiceAlertPlaying) {
+      stopVoiceScheduleAlert();
+      setIsVoiceAlertPlaying(false);
+      return;
+    }
+    void broadcastVoiceScheduleAlert({
+      locale,
+      weather,
+      plan: coordinatorPlan,
+      onStart: () => setIsVoiceAlertPlaying(true),
+      onEnd: () => setIsVoiceAlertPlaying(false),
+    });
+  };
+
+  const handleRefreshShadeRegistry = useCallback(async () => {
+    setIsRefreshingShadeRegistry(true);
+    try {
+      const entries = await fetchShadeRegistry();
+      setShadeRegistry(entries);
+    } finally {
+      setIsRefreshingShadeRegistry(false);
+    }
+  }, []);
+
+  const handleRecordShadeCheckIn = useCallback(
+    async (
+      station: RestStationConfig,
+      crewId: string,
+      method: 'qr_scan' | 'quick_tap'
+    ) => {
+      const result = await recordShadeCheckIn({
+        stationId: station.stationId,
+        stationName: station.stationName,
+        siteId: station.siteId || selectedSiteId,
+        crew_id: crewId,
+        coolingType: station.coolingType,
+        method,
+      });
+      setLastShadeCheckIn(result.entry);
+      setShadeRegistry(result.entries);
+    },
+    [selectedSiteId]
+  );
+
+  const handleClearShadeRegistry = useCallback(async (stationId?: string) => {
+    const remaining = await clearShadeRegistry(stationId);
+    setShadeRegistry(remaining);
+    if (!stationId) {
+      setLastShadeCheckIn(null);
+    }
+  }, []);
+
+  const handleSimulateQrScan = useCallback(
+    (station: RestStationConfig) => {
+      setScannedStation(station);
+      setHasEnteredApp(true);
+      setCurrentRole('worker');
+      if (station.defaultCrewId) {
+        void handleRecordShadeCheckIn(station, station.defaultCrewId, 'qr_scan');
+      } else {
+        setLastShadeCheckIn(null);
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    [handleRecordShadeCheckIn]
+  );
+
+  // Sync Shady Area Registry + Anonymous Incident Log on mount + detect ?checkin=1 QR scans
+  useEffect(() => {
+    void handleRefreshShadeRegistry();
+    fetch('/api/incidents')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const fetched = Array.isArray(data?.entries)
+          ? (data.entries as AnonymousIncidentRecord[])
+          : Array.isArray(data?.incidents)
+          ? (data.incidents as AnonymousIncidentRecord[])
+          : [];
+        if (fetched.length > 0) {
+          setIncidents((prev) => {
+            const seen = new Set(fetched.map((x) => x.id));
+            return [...fetched, ...prev.filter((x) => !seen.has(x.id))].slice(0, 40);
+          });
+        }
+      })
+      .catch(() => {
+        // Offline safe
+      });
+
+    if (typeof window !== 'undefined' && !qrCheckInHandledRef.current) {
+      const parsedQr = parseCheckInQueryParams(window.location.search);
+      if (parsedQr) {
+        qrCheckInHandledRef.current = true;
+        const matchedSite =
+          UAE_SITE_PRESETS.find((s) => s.id === parsedQr.siteId) || UAE_SITE_PRESETS[0];
+        if (parsedQr.siteId && parsedQr.siteId !== 'custom') {
+          setSelectedSiteId(matchedSite.id);
+        }
+        const station: RestStationConfig = {
+          stationId: parsedQr.stationId,
+          stationName: parsedQr.stationName,
+          siteId: parsedQr.siteId,
+          siteName: matchedSite.name,
+          coolingType: parsedQr.coolingType,
+          defaultCrewId: parsedQr.crewId,
+        };
+        setScannedStation(station);
+        setHasEnteredApp(true);
+        setCurrentRole('worker');
+        if (parsedQr.crewId) {
+          void handleRecordShadeCheckIn(station, parsedQr.crewId, 'qr_scan');
+        }
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+    }
+  }, [handleRefreshShadeRegistry, handleRecordShadeCheckIn]);
 
   useEffect(() => {
     const handlePopState = () => {
@@ -540,14 +1482,12 @@ export default function App() {
           onOpenImpact={() => setIsImpactOpen(true)}
         />
 
-        {/* Evidence & Hardware Guide Modal */}
         <EvidenceModal
           isOpen={isEvidenceOpen}
           onClose={() => setIsEvidenceOpen(false)}
           locale={locale}
         />
 
-        {/* Impact Metrics & Hypotheses Modal */}
         <ImpactModal
           isOpen={isImpactOpen}
           onClose={() => setIsImpactOpen(false)}
@@ -573,14 +1513,12 @@ export default function App() {
           onOpenTeam={handleOpenTeamPage}
         />
 
-        {/* Evidence & ESP32 Hardware Guide Modal */}
         <EvidenceModal
           isOpen={isEvidenceOpen}
           onClose={() => setIsEvidenceOpen(false)}
           locale={locale}
         />
 
-        {/* Impact Metrics & Hypotheses Modal */}
         <ImpactModal
           isOpen={isImpactOpen}
           onClose={() => setIsImpactOpen(false)}
@@ -588,7 +1526,6 @@ export default function App() {
           locale={locale}
         />
 
-        {/* Voice-Based Question and Answer Facility Modal */}
         <VoiceQaModal
           isOpen={isVoiceQaOpen}
           onClose={() => setIsVoiceQaOpen(false)}
@@ -602,7 +1539,7 @@ export default function App() {
           onClick={() => setIsVoiceQaOpen(true)}
           aria-label={locale === 'ar' ? 'المساعد الصوتي للسلامة' : 'Voice Safety Q&A Assistant'}
           title={locale === 'ar' ? 'المساعد الصوتي للسلامة - تحدث بصوتك واستمع للإجابة' : 'Voice Safety Q&A - Speak and listen in English & Arabic'}
-          className="fixed bottom-6 right-5 rtl:right-auto rtl:left-5 z-40 bg-[#173829] hover:bg-[#24533D] text-[#FAF8F3] px-3.5 py-3 sm:px-4 sm:py-3.5 rounded-2xl shadow-xl flex items-center space-x-2.5 rtl:space-x-reverse font-bold text-xs sm:text-sm border-2 border-[#FAF8F3] transition-all hover:scale-105 active:scale-95 group cursor-pointer"
+          className="fixed bottom-6 right-5 rtl:right-auto rtl:left-5 z-40 bg-[#173829] hover:bg-[#24533D] text-[#FAF8F3] px-3.5 py-3 sm:px-4 sm:py-3.5 rounded-2xl shadow-xl flex items-center space-x-2.5 rtl:space-x-reverse font-bold text-xs sm:text-sm border-2 border-[#FAF8F3] transition-all hover:scale-105 active:scale-95 group cursor-pointer print:hidden"
         >
           <span className="relative flex h-3 w-3">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#A3E5C1] opacity-75"></span>
@@ -623,11 +1560,73 @@ export default function App() {
       lang={locale}
       className="min-h-screen bg-[#FAF8F3] text-[#173829] flex flex-col font-sans selection:bg-[#173829] selection:text-[#FAF8F3] pb-16 md:pb-0 overflow-x-hidden"
     >
+      {/* Persistent Non-Medical & Anti-Misuse Boundary Strip */}
+      <div className="bg-[#173829] text-[#FAF8F3] px-4 py-1.5 text-[11px] font-semibold border-b border-[#24533D]">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+          <span className="flex items-center gap-1.5">
+            <ShieldCheck className="w-3.5 h-3.5 text-[#A3E5C1] shrink-0" />
+            <span>
+              {locale === 'ar'
+                ? 'إرشادات بيئية آلية فقط. ليست تشخيصاً طبياً ولا علاجاً.'
+                : 'Automated environmental guidance only. Not a medical diagnosis or treatment.'}
+            </span>
+          </span>
+          <span className="text-[#D7E6DD]">
+            {locale === 'ar'
+              ? 'يُمنع استخدام هذه الأداة لتقييم الأداء الفردي أو اتخاذ إجراءات تأديبية.'
+              : 'This tool must not be used for individual performance evaluation or disciplinary action.'}
+          </span>
+        </div>
+      </div>
+
+      {/* Offline / Stale Mode Banner */}
+      <OfflineModeBanner
+        lastUpdatedDisplay={weather.lastUpdatedDisplay}
+        isDataStale={weather.status !== 'live'}
+        locale={locale}
+      />
+
+      {/* Active Crew Hydration Reminder Banner (Requires Approved Schedule Gate) */}
+      {activeHydrationBanner && (
+        <div
+          role="alert"
+          className="bg-[#173829] text-[#FAF8F3] px-4 py-2.5 text-xs font-bold border-b border-[#A3E5C1]/40 shadow-sm print:hidden"
+        >
+          <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Droplets className="w-4 h-4 text-[#A3E5C1] shrink-0" />
+              <span>
+                {locale === 'ar'
+                  ? activeHydrationBanner.messages.ar
+                  : activeHydrationBanner.messages.en}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleAcknowledgeHydrationAlert(activeHydrationBanner.id)}
+                className="px-2.5 py-1 rounded-lg bg-[#A3E5C1] text-[#173829] font-extrabold text-[11px] cursor-pointer hover:bg-[#8cd8af]"
+              >
+                {locale === 'ar' ? 'تأكيد استلام الطاقم' : 'Crew Acknowledge'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveHydrationBanner(null)}
+                className="p-1 rounded-lg hover:bg-white/10 cursor-pointer"
+                aria-label="Dismiss hydration banner"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 1. Header with Role Switcher, Heritage Green Theme & Bilingual Language Selector */}
       <Header
         currentRole={currentRole}
         onSelectRole={(r) => setCurrentRole(r)}
-        isLiveMode={isLiveMode}
+        isLiveMode={isLiveMode || weather.status === 'live'}
         isMiddayBanActive={currentEvaluation.isMiddayBanActive}
         locale={locale}
         onSetLocale={handleSetLocale}
@@ -645,8 +1644,8 @@ export default function App() {
             <WifiOff className="w-4 h-4 shrink-0 text-[#B45309]" />
             <span>
               {locale === 'ar'
-                ? 'تعذر الوصول إلى رابط مستشعر ESP32. تم التحويل بسلاسة إلى وضع المحاكاة الميدانية الآمن.'
-                : 'ESP32 sensor URL unreachable. Gracefully fallen back to SIMULATED SENSOR MODE with full functionality.'}
+                ? 'تعذر الوصول إلى رابط المستشعر. تم التحويل بسلاسة إلى وضع المحاكاة الميدانية الآمن.'
+                : 'Sensor URL unreachable. Gracefully fallen back to SIMULATED SENSOR MODE with full functionality.'}
             </span>
           </div>
           <button
@@ -684,8 +1683,8 @@ export default function App() {
                 currentLang={currentLang}
                 onChangeLanguage={(l) => setCurrentLang(l)}
                 onOpenWhyAlert={() => setIsWhyAlertOpen(true)}
-                symptoms={symptoms}
-                onToggleSymptom={handleToggleSymptom}
+                symptoms={[]}
+                onToggleSymptom={() => {}}
                 isNewWorker={isNewWorker}
                 onToggleNewWorker={(v) => setIsNewWorker(v)}
                 isAiLoading={isAiLoading}
@@ -698,6 +1697,13 @@ export default function App() {
                 lastHydrationTime={lastHydrationTime}
                 onLogDrink={handleLogDrink}
                 onUndoDrink={handleUndoDrink}
+                roster={roster}
+                selectedSite={selectedSite}
+                scannedStation={scannedStation}
+                lastShadeCheckIn={lastShadeCheckIn}
+                onShadeCheckIn={handleRecordShadeCheckIn}
+                onDismissScannedStation={() => setScannedStation(null)}
+                coordinatorPlan={coordinatorPlan}
               />
             )}
 
@@ -734,6 +1740,89 @@ export default function App() {
                 locale={locale}
                 advice={advice}
                 onOpenVoiceQa={() => setIsVoiceQaOpen(true)}
+                weather={weather}
+                selectedSite={selectedSite}
+                onSelectPresetSite={handleSelectPresetSite}
+                onApplyCustomCoords={handleApplyCustomCoords}
+                onRefreshWeather={() => refreshLiveWeather(selectedSite, simulateOffline, false)}
+                isRefreshingWeather={isRefreshingWeather}
+                simulateOffline={simulateOffline}
+                onToggleSimulateOffline={handleToggleOffline}
+                roster={roster}
+                onChangeRoster={handleChangeRoster}
+                coordinatorPlan={coordinatorPlan}
+                isCoordinatorPlanning={isCoordinatorPlanning}
+                isVoiceAlertPlaying={isVoiceAlertPlaying}
+                onReplanCoordinator={(mockViolation) =>
+                  runCoordinatorPlanner(
+                    weather,
+                    roster,
+                    complianceConfig,
+                    forceMiddaySeason,
+                    coordinatorPlan,
+                    mockViolation
+                  )
+                }
+                onApproveCoordinatorPlan={() => {
+                  const nextApproved = !coordinatorPlan.approved;
+                  setCoordinatorPlan((prev) => ({
+                    ...prev,
+                    approved: nextApproved,
+                    approvedAtIso: nextApproved ? new Date().toISOString() : undefined,
+                  }));
+                  const approvalEntry = createAuditEntry({
+                    idPrefix: 'audit-approve',
+                    planId: coordinatorPlan.planId,
+                    aiSuggestionSummary: `${coordinatorPlan.blocks.length} hourly crew schedule blocks (${coordinatorPlan.source}).`,
+                    complianceVerdict: coordinatorPlan.overallComplianceStatus,
+                    humanDecision: nextApproved ? 'Approved' : 'Edited',
+                    details: nextApproved
+                      ? `Coordinator approved compliant schedule (Readiness ${checklist.completionPercent}%). Voice & WhatsApp crew broadcast unlocked.`
+                      : 'Coordinator revoked approval for re-review.',
+                  });
+                  setAuditLog((prev) => appendAuditEntry(prev, approvalEntry, 40));
+                }}
+                onUpdateScheduleBlock={handleUpdateScheduleBlock}
+                onCopyWhatsApp={handleCopyWhatsApp}
+                onExportComplianceCsv={handleExportComplianceCsv}
+                onPrintSchedule={() => window.print()}
+                onToggleVoiceAlert={handleToggleVoiceAlert}
+                complianceConfig={complianceConfig}
+                forceMiddaySeason={forceMiddaySeason}
+                onToggleForceMiddaySeason={handleToggleForceMiddaySeason}
+                onUpdateComplianceConfig={handleUpdateComplianceConfig}
+                shadeRegistry={shadeRegistry}
+                isRefreshingShadeRegistry={isRefreshingShadeRegistry}
+                onRefreshShadeRegistry={handleRefreshShadeRegistry}
+                onClearShadeRegistry={handleClearShadeRegistry}
+                onSimulateQrScan={handleSimulateQrScan}
+                triggerEval={triggerEval}
+                selectedZoneSummary={zoneCalculations.selectedZoneSummary}
+                checklist={checklist}
+                onToggleChecklistItem={handleToggleChecklistItem}
+                onUpdateChecklistNote={handleUpdateChecklistNote}
+                hydrationAlerts={hydrationAlerts}
+                onPushHydrationAlert={handlePushHydrationAlert}
+                onAcknowledgeHydrationAlert={handleAcknowledgeHydrationAlert}
+                acclimatizationTags={acclimatizationTags}
+                acclimatizationPlans={acclimatizationPlans}
+                onChangeAcclimatizationTag={handleChangeAcclimatizationTag}
+                onGenerateAcclimatizationPlan={handleGenerateAcclimatizationPlan}
+                isGeneratingAcclim={isGeneratingAcclim}
+                zoneAssignments={zoneAssignments}
+                onUpdateZoneAssignment={handleUpdateZoneAssignment}
+                incidents={incidents}
+                onLogIncident={handleLogIncident}
+                auditLog={auditLog}
+                onApplySiteMeterReading={handleApplySiteMeterReading}
+                onClearSiteMeterReading={handleClearSiteMeterReading}
+                siteRestCapacityCrews={siteRestCapacityCrews}
+                firstAidersOnDuty={firstAidersOnDuty}
+                onChangeSiteResources={handleChangeSiteResources}
+                proactiveProposedPlan={proactiveProposedPlan}
+                onAcceptProactivePlan={handleAcceptProactivePlan}
+                onRejectProactivePlan={handleRejectProactivePlan}
+                onRejectCoordinatorPlan={handleRejectCoordinatorPlan}
               />
             )}
           </motion.div>
@@ -743,7 +1832,7 @@ export default function App() {
       {/* Mobile Sticky Bottom Navigation Bar (Real App Feel) */}
       <nav
         aria-label="Mobile Navigation"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#FAF8F3]/95 backdrop-blur-md border-t border-[#E8E2D5] py-2 px-6 flex justify-around items-center shadow-lg"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#FAF8F3]/95 backdrop-blur-md border-t border-[#E8E2D5] py-2 px-6 flex justify-around items-center shadow-lg print:hidden"
       >
         <button
           onClick={() => setCurrentRole('worker')}
@@ -823,7 +1912,7 @@ export default function App() {
         locale={locale}
       />
 
-      {/* Evidence & ESP32 Hardware Guide Modal */}
+      {/* Evidence & Hardware Guide Modal */}
       <EvidenceModal
         isOpen={isEvidenceOpen}
         onClose={() => setIsEvidenceOpen(false)}
@@ -852,7 +1941,7 @@ export default function App() {
         onClick={() => setIsVoiceQaOpen(true)}
         aria-label={locale === 'ar' ? 'المساعد الصوتي للسلامة' : 'Voice Safety Q&A Assistant'}
         title={locale === 'ar' ? 'المساعد الصوتي للسلامة - تحدث بصوتك واستمع للإجابة' : 'Voice Safety Q&A - Speak and listen in English & Arabic'}
-        className="fixed bottom-20 md:bottom-8 right-5 rtl:right-auto rtl:left-5 z-40 bg-[#173829] hover:bg-[#24533D] text-[#FAF8F3] px-3.5 py-3 sm:px-4 sm:py-3.5 rounded-2xl shadow-xl flex items-center space-x-2.5 rtl:space-x-reverse font-bold text-xs sm:text-sm border-2 border-[#FAF8F3] transition-all hover:scale-105 active:scale-95 group"
+        className="fixed bottom-20 md:bottom-8 right-5 rtl:right-auto rtl:left-5 z-40 bg-[#173829] hover:bg-[#24533D] text-[#FAF8F3] px-3.5 py-3 sm:px-4 sm:py-3.5 rounded-2xl shadow-xl flex items-center space-x-2.5 rtl:space-x-reverse font-bold text-xs sm:text-sm border-2 border-[#FAF8F3] transition-all hover:scale-105 active:scale-95 group print:hidden"
       >
         <span className="relative flex h-3 w-3">
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#A3E5C1] opacity-75"></span>

@@ -19,7 +19,7 @@ export const Footer: React.FC<FooterProps> = ({
   const t = UI_TRANSLATIONS[locale];
 
   return (
-    <footer className="mt-12 bg-[#F4EFE6] border-t border-[#E2DCD0] text-[#173829] relative overflow-hidden">
+    <footer className="mt-12 bg-[#F4EFE6] border-t border-[#E2DCD0] text-[#173829] relative overflow-hidden print:hidden">
       {/* Dubai Skyline illustration along the top edge of footer */}
       <div className="w-full opacity-90 pt-4">
         <DubaiSkyline fillColor="#173829" accentColor="#2D5E46" height={80} />
@@ -40,8 +40,8 @@ export const Footer: React.FC<FooterProps> = ({
             </div>
             <p className="text-xs text-[#4A6857] leading-relaxed max-w-sm">
               {locale === 'ar'
-                ? 'مبادرة رقمية متقدمة لحماية عمال الإنشاءات وسائقي توصيل الطلبات في دبي من الإجهاد الحراري، تجمع بين الذكاء الاصطناعي ومعايير السلامة المهنية الدولية.'
-                : 'Advanced AI-powered heat-risk early warning and SmartShift planning system for Dubai outdoor workers and delivery riders.'}
+                ? 'أداة دعم القرار لمنسقي المواقع في الإمارات لتحويل الظروف الحرارية المباشرة وجداول الفرق المجهولة إلى جداول عمل وراحة متوافقة دون جمع بيانات صحية فردية.'
+                : 'HeatShield AI is a site-coordinator decision-support tool that turns live heat conditions and shift rosters into compliant, safer work-rest schedules, without collecting or exposing individual worker health data.'}
             </p>
           </div>
 
@@ -56,14 +56,14 @@ export const Footer: React.FC<FooterProps> = ({
                 className="text-left rtl:text-right text-[#2D4D3C] hover:text-[#173829] hover:underline flex items-center space-x-1.5 rtl:space-x-reverse"
               >
                 <BookOpen className="w-3.5 h-3.5 text-[#173829]" />
-                <span>{t.nav.evidence} • ISO 7243 & Stull 2011</span>
+                <span>{t.nav.evidence}</span>
               </button>
               <button
                 onClick={onOpenImpact}
                 className="text-left rtl:text-right text-[#2D4D3C] hover:text-[#173829] hover:underline flex items-center space-x-1.5 rtl:space-x-reverse"
               >
                 <TrendingUp className="w-3.5 h-3.5 text-[#173829]" />
-                <span>{t.nav.impact} • Lead Time & Adherence</span>
+                <span>{t.nav.impact}</span>
               </button>
               {onOpenTeam && (
                 <a
@@ -80,8 +80,8 @@ export const Footer: React.FC<FooterProps> = ({
               )}
               <div className="text-[11px] text-[#6C8D7B]">
                 {locale === 'ar'
-                  ? 'متوافق مع قرار وزارة الموارد البشرية والتوطين رقم (44) لسنة 2022'
-                  : 'UAE Ministerial Decree No. 44 (2022) Midday Ban Compliant'}
+                  ? 'متوافق مع قاعدة حظر العمل وقت الظهيرة لوزارة الموارد البشرية والتوطين (12:30–15:00). يُرجى التحقق من أحدث الإرشادات الرسمية قبل الاستخدام التشغيلي.'
+                  : 'UAE MOHRE Midday Break Rule (12:30–15:00, 15 Jun – 15 Sep) · Verify against official MOHRE / OSHAD guidance before operational use.'}
               </div>
             </div>
           </div>
@@ -102,7 +102,7 @@ export const Footer: React.FC<FooterProps> = ({
         {/* Non-medical Statutory Disclaimer */}
         <div className="pt-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-[11px] text-[#6C8D7B]">
           <div className="leading-relaxed text-center sm:text-left rtl:sm:text-right">
-            <strong>{t.footer.disclaimerTitle}:</strong> {t.footer.disclaimerText}
+            <strong>{t.footer.disclaimerTitle}:</strong> Automated environmental guidance only. Not a medical diagnosis or treatment. This tool must not be used for individual performance evaluation or disciplinary action.
           </div>
 
           <div className="shrink-0 flex items-center space-x-1 rtl:space-x-reverse font-medium">

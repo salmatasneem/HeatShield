@@ -1,147 +1,131 @@
 # HeatShield AI
 
-**Privacy-first occupational heat-risk early-warning, hydration tracking, and SmartShift scheduling platform for outdoor workers and delivery riders in Dubai & the UAE.**
+**HeatShield AI is a site-coordinator decision-support tool that turns live heat conditions and shift rosters into compliant, safer work-rest schedules, without collecting or exposing individual worker health data.**
 
-Built around **ISO 7243 (WBGT)** thermal standards and **UAE Ministry of Human Resources and Emiratisation (MoHRE)** Midday Break regulations (`12:30–15:00`), HeatShield AI combines a deterministic physiological rule engine with server-side **Google Gemini** reasoning, bilingual (**English & Arabic**) voice Q&A, live microphone transcription, and interactive site planning.
-
----
-
-## Key Features
-
-### 1. Deterministic WBGT & Heat-Risk Engine
-- Calculates **Wet-Bulb Globe Temperature (WBGT)** from ambient air temperature, relative humidity, solar globe radiant temperature, and sun exposure (`full`, `partial`, `shade`).
-- Adjusts thresholds dynamically for **workload** (`Light`, `Moderate`, `Heavy`, `Very Heavy`), **heavy PPE**, **acclimatization / 14-day new-worker protocol**, **continuous exposure hours**, **self-reported symptoms**, and active **UAE MoHRE Midday Break** hours.
-- Includes a **"Why This Alert?"** mathematical transparency drawer breaking down every risk driver and threshold adjustment.
-- Rule-engine safety guardrail ensures AI explanations may advise raising caution, never lowering a deterministic risk classification.
-
-### 2. Three Role-Specific Workspaces (with Guest Entry)
-- **Landing Experience**: Animated flying-card hero & overview with direct **Continue as Guest** access into any role.
-- **Worker View**:
-  - Live risk card, bilingual audio readout, and 6-language safety alerts (`EN`, `AR`, `HI`, `ML`, `KN`, `UR`).
-  - **Smart Hydration Tracker**: Risk-adaptive daily targets (`2,500–5,000 ml`) and reminder cadences (`45m` Low, `30m` Moderate, `20m` High, `15m` Critical/Midday Ban), one-tap `+250 ml Cup`, `+500 ml Bottle`, `+Electrolyte`, and `Undo` controls, quarter-milestone progress bar, on-time & multi-day hydration streak tracking, and a celebratory particle burst & chime when the daily goal is met.
-  - Work/rest countdown timer, **Buddy Check** teammate check-in, acclimatization status toggle, early heat-strain symptom self-reporting with emergency medic dispatch modal, and an anonymized on-device privacy ledger.
-- **Rider View**:
-  - Shared **Hydration Tracker** synced across role switches.
-  - **Cool-By Routing**: Estimates minutes remaining before WBGT escalates into High/Critical bands.
-  - **Certified Cooling Stations Radar & List**: Computes Haversine distance and estimated motorcycle travel time to Dubai cooling hubs (Downtown, Business Bay, Al Barsha, Deira, Dubai Marina, Al Quoz), pins the nearest emergency refuge during High/Critical heat, and launches Google Maps directions.
-- **Supervisor View**:
-  - Dubai district heat risk overview, rolling WBGT trend, and **Open-Meteo** hourly Dubai forecast integration (`GET /api/weather-forecast` with automatic fallback).
-  - **SmartShift Planner**: Generates heat-aware crew schedules (`Crew A`, `Crew B`, `Crew C`) via Gemini while strictly enforcing the `12:30–15:00` mandatory air-conditioned midday rest window.
-  - Alert lead-time & useful/false-alarm feedback logging.
-
-### 3. Bilingual Voice Safety Q&A & Transcription (EN / AR)
-- **Live Microphone Capture**: Uses `navigator.mediaDevices.getUserMedia` + `MediaRecorder` alongside a live `AudioContext` 7-bar audio level visualizer and optional Web Speech interim captions.
-- **Accurate Server-Side Transcription**: Sends recorded clips to `POST /api/gemini/transcribe` (powered by `gemini-3.5-transcribe` with model fallbacks) to transcribe spoken **English** and **Arabic** accurately.
-- **Spoken Answers**: Replies in both English and clear UAE Arabic (`POST /api/gemini/voice-qa`) and plays natural audio via Gemini TTS (`POST /api/gemini/tts`) with automatic browser `SpeechSynthesis` fallback.
-
-### 4. Hardware Sensor Proxy & Heat-Wave Demo Simulator
-- **Live Sensor Mode**: Polls an ESP32 or REST JSON sensor endpoint (`{ "t": 38.4, "rh": 52, "globe": 45.4 }`) via CORS-safe `GET /api/sensor-proxy`, gracefully falling back to simulated mode if unreachable.
-- **Demo Controls Drawer**: Simulate air temp, humidity, sun exposure, workload, PPE, Midday Ban, or trigger a **60-Second Heat-Wave Scenario Ramp**.
+Built for the **Future Health Digital Innovation Challenge 2026** (*Population Health — Climate-Resilient Worker Health*).
 
 ---
 
-## Tech Stack
+## Problem
 
-- **Frontend**: React 19, TypeScript, Vite 8, Tailwind CSS v4, Motion (`motion/react`), Lucide Icons (`lucide-react`)
-- **Backend**: Node.js, Express 4 (`server.ts` via `tsx`)
-- **AI & Speech**: `@google/genai` (server-side Gemini API for heat advice, SmartShift planning, bilingual Q&A, TTS, and audio transcription)
-- **Weather Data**: Open-Meteo Forecast API (`Asia/Dubai`) with deterministic offline fallback
+Outdoor workers on UAE construction and industrial sites face severe seasonal thermal stress between morning ramp-up and peak afternoon sun. Generic consumer weather apps show only ambient air temperature—ignoring humidity, solar radiation, wind cooling, physical workload, crew shift rosters, and mandatory regulatory midday-break windows. Meanwhile, occupational monitoring systems that collect worker biometrics or individual symptom histories risk privacy intrusion, surveillance creep, and punitive misuse.
 
 ---
 
-## Getting Started
+## Solution
 
-### Prerequisites
-- **Node.js** 20+
-- **npm** (or Bun)
-- A **Google Gemini API key** (optional — all core WBGT calculations, templates, and heuristic responses continue to work in fallback mode without an API key)
+HeatShield AI bridges live meteorological forecasts, deterministic UAE regulatory compliance rules, and anonymized crew-level AI planning into a practical site-coordinator workflow (plus a simple multi-language crew view in English, Arabic RTL, Hindi, and Urdu):
 
-### Installation
+1. **Live Environmental Data (`dataService` + `wbgtCalculator`)**:
+   - Fetches real-time temperature, relative humidity, wind speed, solar radiation, UV index, and hourly forecasts from the free **Open-Meteo API** (no key required) for UAE presets (**Dubai, Abu Dhabi, Sharjah, Al Ain**) or custom site coordinates, with **10-minute automatic refresh**.
+   - Computes **estimated WBGT** and **estimated Heat Index** per hour and per crew exposure (`sun` / `shade` / `indoor`), always labeled explicitly as `estimated`.
+   - Supports optional **On-Site Meter** overrides (`Air Temp`, `Humidity`, optional calibrated `Meter WBGT`) switching the source badge cleanly between **`Regional forecast`** and **`Site-measured`**.
+   - Degrades gracefully on network failure with a visible **Data Stale / Offline** status and cached last-updated timestamp.
 
-```bash
-git clone <your-repository-url>
-cd heatshield-ai
-npm install
-```
+2. **Deterministic UAE Compliance Engine (`complianceEngine` + `complianceConfig.ts`)**:
+   - Rule-based, non-AI engine enforcing the **UAE MOHRE Midday Break Rule** (`12:30 PM – 3:00 PM`, `15 June – 15 September` for direct-sun outdoor work), shaded rest areas, drinking water, and cooling provisions.
+   - Evaluates every hourly shift block as **`Compliant`**, **`At risk`**, or **`Violation`** with the exact rule name that triggered it, computes hourly **Rest-Area Occupancy vs. Shelter Capacity** and **First-Aider Coverage**, and flags **Dangerous Working Conditions**.
+   - Centralizes all thresholds in one editable file (`src/config/complianceConfig.ts`) with a visible reminder to **verify against the latest official MOHRE / OSHAD guidance before operational use**.
 
-### Environment Variables
+3. **Anonymized Shift Roster & Generative AI Planner (`rosterParser` + `aiPlanner`)**:
+   - Accepts CSV upload, pasted text, or demo data restricted strictly to anonymized crew fields: `crew_id`, `taskType`, `workload`, `exposure`, `shiftStart`, `shiftEnd`, and optional `crewTag` (`new_to_site` / `returning_after_leave` / `acclimatized`). Any extra personal columns (names, ages, medical fields) are automatically stripped on ingest.
+   - Sends **only** hourly weather, anonymized crew rows, rest-area capacity, first-aider count, and compliance rules to server-side **Google Gemini** (`POST /api/gemini/schedule-plan`).
+   - Runs every Gemini output through `complianceEngine`: any rule-violating AI draft is **auto-rejected** with an explicit reason and replaced by a guaranteed-compliant deterministic schedule, stamped **`Validated by compliance engine`**.
+   - Supports **Proactive 3-Hour Look-Ahead Re-Planning** (generating a coordinator review banner with a *"What changed & why"* diff when escalation is forecast), inline block edits, **Approve / Reject**, WhatsApp brief copy, CSV export, print-friendly PDF layout, and English/Arabic voice alerts.
 
-Create a `.env` file in the project root:
+4. **Extended Site-Coordinator & Worker Operational Workflow (Zero PII)**:
+   - **Dynamic Triggers & 3-Hour Look-Ahead (`TriggerAndTrustBanner`)**: Maps effective estimated WBGT and MOHRE hours into **`Green / Advisory / Restrict / Stop work`** action levels, recommended mitigation lists, and proactive warnings before threshold crossings.
+   - **Data Quality, Trust & Explainability**: Displays live / forecast / stale confidence tags, switches automatically to conservative safety defaults when offline/stale, and includes an expandable **Explainability** panel showing every input and rule used.
+   - **Acclimatization Planner (Crew-Level)**: Tags crews as `New to Site`, `Returning After Leave`, or `Acclimatized` and uses Gemini (`POST /api/gemini/acclimatization-plan`) + deterministic fallback to build a gradual multi-day exposure ramp marked *"General guidance, verify with your HSE officer."*
+   - **Site Readiness Checklist & Printable PDF Report**: 6 pre-shift compliance checks (shaded rest area, chilled water & electrolytes, cooling stations, first-aider on duty, emergency contacts `998`, shift briefing) feeding directly into site readiness % and exporting a clean printable Daily Compliance Report PDF without any personal data.
+   - **Hydration & Rest-Break Reminder Engine**: Auto-calculates break cadence and water volumes (`ml`) from workload + WBGT, broadcasting via on-screen banners, voice alerts, and copyable WhatsApp/SMS briefs in **EN / AR / HI / UR** with a crew-level `sent / acknowledged` audit log.
+   - **Equipment & Work-Zone Context**: Applies transparent crew-zone offsets (`Open Ground`, `Rooftop`, `Trench`, `Confined Space`, `Near Machinery`, `Indoor/Shaded`), flags high-risk combinations with suggested alternatives, and surfaces optional `Dark PPE` and `Reflective Surfaces` factors explicitly in the formula note.
+   - **What-If Simulator**: Interactive sliders for temperature, humidity, shift hour, workload, rest minutes, zone, and PPE with live compliance status checks and concise Gemini trade-off explanations (`POST /api/gemini/whatif-tradeoff`).
+   - **Anonymous Incident & Near-Miss Log (`GET/POST /api/incidents`)**: Records site-level time, zone, environmental conditions, and preventive action (zero names/medical fields), highlights recurring peak hour/zone patterns, and states *"For site learning only. Not for disciplinary use."*
+   - **Worker-Facing Simple Read-Only View (`WorkerSimpleCardPanel`)**: Zero-login, large-text icon card showing crew rest/water times, current risk level, shade locations, EN/AR/HI/UR voice playback, printable gate QR poster, and stop-and-report warning signs card.
+   - **Rest Station QR & Shady Area Registry (`ShadeStationQrCard`)**: Printable rest-station QR posters allowing zero-typing crew shade check-ins.
+   - **Multi-Site Portfolio Comparison**: Aggregated dashboard comparing **Dubai, Abu Dhabi, Sharjah, and Al Ain**, ranked by sites needing attention first.
+   - **Audit Trail & AI Governance**: Logs AI Suggestion, Compliance Engine Verdict, and Human Coordinator Decision (`Approved`, `Edited`, `Rejected / Replaced`), requiring human schedule approval before sending crew voice or WhatsApp broadcasts.
+   - **Offline-Friendly PWA (`vite-plugin-pwa`)**: Installable web app caching the last approved schedule, UAE compliance rules, and assets, labeling offline outputs clearly as *"based on last update at [time]"*.
+   - **Judges' Impact Metrics Panel**: Operational demo indicators (rest minutes added, heavy work moved out of peak heat, midday-ban compliance %, alerts acknowledged) explicitly marked as operational schedule indicators, not clinical health outcome claims.
 
-```env
-GEMINI_API_KEY=your_gemini_api_key_here
-# Optional: override default server port (defaults to 3000)
-DEFAULT_APP_PORT=3000
-```
-
-> **Security Note**: Never commit `.env` or expose `GEMINI_API_KEY` in client-side code. All Gemini requests are executed server-side in `server.ts`.
-
-### Running Locally
-
-```bash
-# Start full-stack development server (Express + Vite middleware on port 3000)
-npm run dev
-```
-
-Open `http://localhost:3000` in your browser. Allow **Geolocation** (for Rider cooling station proximity) and **Microphone** (for Voice Safety Q&A) permissions when prompted.
-
-### Production Build & Type Check
-
-```bash
-# Type-check TypeScript
-npm run lint
-
-# Build frontend bundle into dist/
-npm run build
-
-# Run production server
-npm start
-```
+5. **Clear Boundary Between Environmental Guidance and Medical Intervention**:
+   - Persistent notice: *"Automated environmental guidance only. Not a medical diagnosis or treatment."*
+   - Dedicated **Emergency & First Aid Escalation** card listing general heat-illness warning signs and instructing crews to stop work, move to shade/AC, cool down, and contact site medic or **UAE Ambulance `998`**.
 
 ---
 
-## API Endpoints (`server.ts`)
-
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `GET` | `/api/health` | Server health and bound port status |
-| `POST` | `/api/gemini/heat-advice` | Generates WBGT driver explanation and 6-language alerts |
-| `POST` | `/api/gemini/smartshift-plan` | Builds 06:00–18:00 crew schedule enforcing the 12:30–15:00 UAE Midday Break |
-| `POST` | `/api/gemini/voice-qa` | Answers worker/rider safety questions in both English and Arabic |
-| `POST` | `/api/gemini/tts` | Synthesizes spoken audio (English & Arabic) with client fallback flag |
-| `POST` | `/api/gemini/transcribe` | Transcribes recorded microphone audio clips (`en` / `ar`) |
-| `GET` | `/api/sensor-proxy?url=...` | Proxies live ESP32 / JSON environmental sensor feeds |
-| `GET` | `/api/weather-forecast` | Fetches Dubai hourly forecast from Open-Meteo with fallback |
-
----
-
-## Project Structure
+## Architecture
 
 ```text
-├── server.ts                  # Express server, Vite middleware, Gemini & proxy API routes
-├── metadata.json              # App metadata & iframe permissions (geolocation, microphone)
-├── index.html                 # HTML entry point & Google Fonts (Plus Jakarta Sans, Tajawal, etc.)
-└── src/
-    ├── App.tsx                # Root state (locale, role, WBGT inputs, shared hydration state)
-    ├── components/
-    │   ├── LandingPage.tsx    # Animated flying-card landing screen & guest entry
-    │   ├── WorkerView.tsx     # Outdoor worker dashboard, buddy check & symptom SOS
-    │   ├── RiderView.tsx      # Delivery rider cool-by routing & Dubai rest hub radar
-    │   ├── SupervisorView.tsx # Site command console, SmartShift planner & feedback log
-    │   ├── HydrationTrackerWidget.tsx # Risk-adaptive water/electrolyte tracker, streak & celebration
-    │   ├── VoiceQaModal.tsx   # Bilingual mic recorder, live waveform & voice Q&A modal
-    │   ├── DemoControlsDrawer.tsx # Live ESP32 sensor URL & 60s heat-wave simulator
-    │   └── WhyAlertDrawer.tsx # WBGT mathematical breakdown & ISO 7243 transparency
-    ├── data/                  # Certified Dubai cooling stations & reference data
-    ├── types/                 # Shared TypeScript interfaces
-    └── utils/
-        ├── riskEngine.ts      # Deterministic WBGT & UAE MoHRE Midday Ban evaluator
-        ├── speech.ts          # Gemini TTS playback, Web Audio chimes & speech recognition
-        └── i18n.ts            # English & Arabic UI localization dictionaries
+├── server.ts                         # Express backend + Open-Meteo proxy + server-side Gemini schedule/acclim/whatif/TTS + shade & incident endpoints
+├── vite.config.ts                    # Vite + VitePWA manifest & Workbox offline runtime cache
+├── src/
+│   ├── config/
+│   │   └── complianceConfig.ts       # Single editable file for UAE compliance thresholds, triggers, zones & rules
+│   ├── services/
+│   │   ├── dataService.ts            # Open-Meteo fetch, site presets, stale/offline cache & site-only storage
+│   │   ├── wbgtCalculator.ts         # Estimated WBGT (Stull wet-bulb + globe radiation) & Heat Index
+│   │   ├── complianceEngine.ts       # Deterministic UAE rule engine & fallback schedule generator
+│   │   ├── coordinatorEngines.ts     # Acclimatization, readiness, hydration cadence, triggers, zone modifiers, what-if, incidents, portfolio & metrics
+│   │   ├── shadeRegistryService.ts   # Rest Station QR URL & zero-typing shade bay check-in registry
+│   │   ├── rosterParser.ts           # Strict crew-only CSV parser stripping personal fields
+│   │   ├── aiPlanner.ts              # Gemini planner client + compliance guardrail validator + diff engine
+│   │   ├── auditLog.ts               # Coordinator AI-to-human governance audit helper
+│   │   ├── alertService.ts           # WhatsApp brief formatter, CSV export, voice broadcast alerts
+│   │   ├── i18n.ts                   # EN / AR (RTL) dashboard + EN / AR / HI / UR worker labels
+│   │   └── __tests__/sanityChecks.ts # Automated sanity checks for wbgtCalculator, complianceEngine, auditLog & privacy
+│   ├── hooks/
+│   │   └── usePWAInstall.ts          # PWA install prompt & online/offline status hooks
+│   ├── components/
+│   │   ├── coordinator/              # TriggerAndTrustBanner, HSEOperationsSuite, RosterIntakeBar, ShiftTimelineGrid, SideGuidancePanel, ShadeStationQrCard
+│   │   ├── WorkerSimpleCardPanel.tsx # No-login, large-text icon card & gate QR poster for crews
+│   │   ├── PWAInstallButton.tsx      # Install App button & Offline/Stale banner
+│   │   ├── VoiceQaModal.tsx          # Bilingual Voice Safety Q&A
+│   │   └── TeamPage.tsx              # /team route
+│   └── App.tsx                       # Site-coordinator, offline cache & AI governance workflow state
 ```
 
 ---
 
-## Disclaimer
+## Privacy & Data Minimization
 
-HeatShield AI is an occupational thermal-safety decision-support and planning aid. It does **not** provide medical diagnoses. In any suspected case of heat exhaustion or heat stroke, stop physical work immediately, move to a cooled area, begin active cooling, and contact emergency medical services (**998** in Dubai / UAE).
+HeatShield AI is architected so **no individual worker data can enter, persist, or leave the browser**:
+- **Zero Individual Profiles**: No login accounts, worker names, ages, Emirates IDs, phone numbers, or wearable biometrics.
+- **Zero Individual Health Inputs**: No personal symptom checklists, medical histories, diagnoses, or individual fatigue scores. Acclimatization tags (`new_to_site`, `returning_after_leave`), rest-bay QR check-ins, and hydration acknowledgements operate strictly at the **crew_id / site level**.
+- **Ingestion Guardrail**: `rosterParser` drops any columns outside the anonymous crew-level fields (`crew_id`, `taskType`, `workload`, `exposure`, `shiftStart`, `shiftEnd`, optional `crewTag`), and backend `/api/incidents` & `/api/shade-registry` routes accept only whitelisted anonymous site/crew fields.
+- **Session & Local Storage**: `localStorage` caches only site-level settings, coordinates, editable thresholds, anonymous crew rows, readiness checklist state, offline weather timestamps, and the last approved crew schedule.
+- **Anti-Misuse Notice**: *"This tool must not be used for individual performance evaluation or disciplinary action."* and *"For site learning only. Not for disciplinary use."*
+
+---
+
+## Limitations
+
+- **Meteorological Estimates, Not On-Site Globe Thermometry**: Estimated WBGT and Heat Index are derived mathematically from Open-Meteo regional forecasts (air temperature, humidity, wind speed, shortwave radiation) rather than calibrated on-site black-globe hardware sensors. Microclimates near reflective steel, asphalt, or enclosed scaffolding can run hotter.
+- **Regulatory Reference Disclaimer**: Thresholds and seasonal hours reflect general UAE summer rules and are stored in `src/config/complianceConfig.ts` for coordinator review. Coordinators must **verify against the latest official MOHRE / OSHAD guidance before operational use**.
+- **Not a Medical Tool**: Provides automated environmental scheduling guidance only—not clinical triage, diagnosis, or medical treatment.
+
+---
+
+## Running & Verification
+
+```bash
+npm install
+npm run test:sanity   # Run 17 deterministic wbgtCalculator, complianceEngine, auditLog & privacy checks
+npm run lint          # TypeScript check
+npm run build         # Production bundle & service worker
+npm run dev           # Full-stack Express + Vite server on port 3000
+```
+
+Required environment variable in `.env` (server-side only):
+```env
+GEMINI_API_KEY=your_key_here
+```
+
+---
+
+## Future Work
+
+1. **On-Site Calibrated IoT Microclimate Sensors**: Pair regional Open-Meteo forecasts with calibrated site wet-bulb/black-globe (WBGT) stations via MQTT/REST gateways for zone-accurate radiant heat verification.
+2. **Official WBGT & National Weather Station Feeds**: Integrate directly with UAE National Center of Meteorology (NCM) and municipal heat telemetry feeds.
+3. **Shift & Site Attendance System Integration**: Connect read-only crew counts and zone assignments from enterprise ERP/site access systems while preserving anonymous crew-level aggregation and zero worker-level health telemetry.

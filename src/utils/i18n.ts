@@ -207,7 +207,7 @@ export const UI_TRANSLATIONS: Record<AppLocale, TranslationDictionary> = {
     riskCard: {
       title: 'Real-Time Thermal Risk Assessment',
       middayBanTitle: 'UAE Legal Midday Ban Active (12:30–15:00)',
-      middayBanDesc: 'All outdoor work under direct sun is strictly prohibited by UAE Ministry Decree. Mandatory work stoppage and shaded rest.',
+      middayBanDesc: 'Outdoor work under direct sun is prohibited under the UAE MOHRE Midday Break Rule. Mandatory work stoppage and shaded rest.',
       estimatedWbgt: 'Estimated WBGT Index',
       safetyMargin: 'Thermal Safety Margin',
       vsLimit: 'vs limit',

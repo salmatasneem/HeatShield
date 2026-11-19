@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { Role } from '../types';
 import { AppLocale, UI_TRANSLATIONS } from '../utils/i18n';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface HeaderProps {
   currentRole: Role;
@@ -204,6 +205,9 @@ export const Header: React.FC<HeaderProps> = ({
               <Mic className="w-3.5 h-3.5 text-[#173829]" />
               <span className="hidden sm:inline">{locale === 'ar' ? 'اسأل صوتياً' : 'Voice Q&A'}</span>
             </button>
+
+            {/* PWA Install Button */}
+            <PWAInstallButton locale={locale} compact />
 
             {/* Demo Controls Button */}
             <button

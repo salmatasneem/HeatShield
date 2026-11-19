@@ -158,7 +158,7 @@ export const RiskCard: React.FC<RiskCardProps> = ({
         <div className="flex items-center space-x-6 rtl:space-x-reverse bg-[#f7f5ee] px-6 py-4 rounded-2xl border border-[#d8d0bf] self-start lg:self-auto shadow-xs">
           <div>
             <div className="text-[11px] font-bold uppercase tracking-wider text-[#426050]">
-              {t.riskCard.estimatedWbgt}
+              {t.riskCard.estimatedWbgt} ({locale === 'ar' ? 'تقديري' : 'estimated'})
             </div>
             <div className="flex items-baseline space-x-1 rtl:space-x-reverse">
               <span className="text-3xl sm:text-4xl font-black font-mono text-[#173829]">

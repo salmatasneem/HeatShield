@@ -79,7 +79,9 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
-// Resilient helper to call Gemini with low-latency primary and fast fallback
+const textModelCooldownUntil = new Map<string, number>();
+
+// Resilient helper to call Gemini with low-latency primary and fast cooldown failover
 async function generateContentResilient(params: {
   contents: string;
   systemInstruction?: string;
@@ -100,7 +102,11 @@ async function generateContentResilient(params: {
     ? (['gemini-3.1-flash-lite', 'gemini-4-hydrogen'] as const)
     : (['gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const);
 
-  for (const model of modelOrder) {
+  const now = Date.now();
+  const candidates = modelOrder.filter((m) => (textModelCooldownUntil.get(m) || 0) <= now);
+  const modelsToAttempt = candidates.length > 0 ? candidates : modelOrder;
+
+  for (const model of modelsToAttempt) {
     try {
       const config =
         model === 'gemini-4-hydrogen'
@@ -118,8 +124,17 @@ async function generateContentResilient(params: {
       );
       if (response.text) return response.text;
     } catch (err: any) {
-      const msg = err?.message || '';
-      console.log(`Gemini (${model}) notice:`, msg.slice(0, 120));
+      const msg = String(err?.message || '');
+      if (
+        msg.includes('503') ||
+        msg.includes('429') ||
+        msg.includes('UNAVAILABLE') ||
+        msg.includes('RESOURCE_EXHAUSTED') ||
+        msg.includes('TIMEOUT')
+      ) {
+        textModelCooldownUntil.set(model, Date.now() + 60_000);
+      }
+      // Fail over cleanly to secondary model or deterministic compliance template
     }
   }
 
@@ -523,10 +538,9 @@ async function synthesizeViaGeminiLive(
           },
           onerror: (err: any) => {
             const errMsg = err?.message || String(err || '');
-            if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
-              ttsModelCooldownUntil.set('gemini-3.8-live', Date.now() + 15000);
+            if (errMsg.includes('429') || errMsg.includes('503') || errMsg.includes('UNAVAILABLE') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+              ttsModelCooldownUntil.set('gemini-3.8-live', Date.now() + 30000);
             }
-            console.log(`Gemini Live TTS (${language}) note:`, errMsg.slice(0, 140));
             finish(null);
           },
           onclose: () => {
@@ -559,10 +573,9 @@ async function synthesizeViaGeminiLive(
       })
       .catch((err: any) => {
         const errMsg = err?.message || String(err || '');
-        if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
-          ttsModelCooldownUntil.set('gemini-3.8-live', Date.now() + 15000);
+        if (errMsg.includes('429') || errMsg.includes('503') || errMsg.includes('UNAVAILABLE') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+          ttsModelCooldownUntil.set('gemini-3.8-live', Date.now() + 30000);
         }
-        console.log(`Gemini Live connect (${language}) note:`, errMsg.slice(0, 140));
         finish(null);
       });
   });
@@ -693,13 +706,17 @@ async function synthesizeTtsInternal(
         }
       } catch (err: any) {
         const errMsg = err?.message || String(err);
-        if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+        if (
+          errMsg.includes('429') ||
+          errMsg.includes('503') ||
+          errMsg.includes('UNAVAILABLE') ||
+          errMsg.includes('RESOURCE_EXHAUSTED')
+        ) {
           rateLimitedInCall.add(attempt.model);
           const isPerDay = errMsg.includes('PerDay') || errMsg.includes('RequestsPerDay');
-          ttsModelCooldownUntil.set(attempt.model, Date.now() + (isPerDay ? 600000 : 8000));
+          ttsModelCooldownUntil.set(attempt.model, Date.now() + (isPerDay ? 600000 : 15000));
         }
-        attemptErrors.push(`${attempt.model}(meta=${attempt.withMetadata}): ${errMsg.slice(0, 120)}`);
-        console.log(`Gemini TTS attempt (${attempt.model}, meta=${attempt.withMetadata}, lang=${normalizedLang}) note:`, errMsg.slice(0, 140));
+        attemptErrors.push(`${attempt.model}(meta=${attempt.withMetadata}): fallback`);
       }
     }
 
@@ -1028,8 +1045,7 @@ app.post('/api/gemini/transcribe', async (req: Request, res: Response) => {
         });
       }
     } catch (err: any) {
-      lastError = err?.message || String(err);
-      console.log(`Gemini transcribe (${model}) note:`, lastError.slice(0, 140));
+      lastError = 'Transcription fallback triggered';
     }
   }
 
@@ -1068,32 +1084,402 @@ app.get('/api/sensor-proxy', async (req: Request, res: Response) => {
   }
 });
 
-// 4. Predictive Heat Windows / Weather Forecast for Dubai
-app.get('/api/weather-forecast', async (_req: Request, res: Response) => {
+// 4. Predictive Heat Windows / Weather Forecast for UAE Coordinates (Open-Meteo Live Proxy)
+app.get('/api/weather-forecast', async (req: Request, res: Response) => {
+  const lat = Number(req.query.lat) || 25.1342;
+  const lon = Number(req.query.lon) || 55.2286;
+
   try {
-    const apiUrl =
-      'https://api.open-meteo.com/v1/forecast?latitude=25.2048&longitude=55.2708&hourly=temperature_2m,relative_humidity_2m,direct_normal_irradiance&timezone=Asia%2FDubai&forecast_days=1';
-    const omRes = await fetch(apiUrl, { signal: AbortSignal.timeout(3500) });
+    const apiUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,shortwave_radiation,uv_index&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m,shortwave_radiation,uv_index&timezone=Asia%2FDubai&forecast_days=1`;
+    const omRes = await fetch(apiUrl, { signal: AbortSignal.timeout(4500) });
     if (omRes.ok) {
       const weatherData = await omRes.json();
       return res.json(weatherData);
     }
   } catch (e) {
-    // Graceful fallback to synthetic high-fidelity forecast
+    // Graceful failure handled below
   }
 
-  // Realistic Dubai Summer Hourly Forecast fallback
-  const fallbackHours = [
-    { hour: '06:00', temp: 31, rh: 65, wbgt: 26.2, status: 'Safe' },
-    { hour: '08:00', temp: 35, rh: 58, wbgt: 29.4, status: 'Caution' },
-    { hour: '10:00', temp: 39, rh: 48, wbgt: 31.8, status: 'Caution' },
-    { hour: '12:00', temp: 42, rh: 42, wbgt: 34.1, status: 'High Risk' },
-    { hour: '13:00', temp: 43.5, rh: 40, wbgt: 35.0, status: 'Midday Ban (Stop)' },
-    { hour: '14:30', temp: 44, rh: 38, wbgt: 34.8, status: 'Midday Ban (Stop)' },
-    { hour: '16:00', temp: 41, rh: 45, wbgt: 33.2, status: 'Caution' },
-    { hour: '18:00', temp: 37, rh: 55, wbgt: 30.1, status: 'Caution' },
-  ];
-  return res.json({ fallback: true, hours: fallbackHours });
+  return res.status(503).json({
+    error: 'Open-Meteo live endpoint unreachable',
+    staleFallbackAvailable: true,
+  });
+});
+
+// 5. Occupational Crew-Level Schedule Planner (Strict Data Minimization: Zero PII/Worker Health Data)
+app.post('/api/gemini/schedule-plan', async (req: Request, res: Response) => {
+  const {
+    siteName = 'UAE Worksite',
+    hourlyWeather = [],
+    roster = [],
+    complianceRules = {},
+    siteRestCapacityCrews = 2,
+    firstAidersOnDuty = 2,
+  } = req.body || {};
+
+  if (!Array.isArray(roster) || roster.length === 0) {
+    return res.status(400).json({ error: 'Anonymized crew roster rows are required.' });
+  }
+
+  // Strictly project only allowed anonymized fields before sending anything to Gemini
+  const cleanRoster = roster.map((r: any) => ({
+    crew_id: String(r.crew_id || 'Crew').slice(0, 24),
+    taskType: String(r.taskType || 'Site Work').slice(0, 64),
+    workload: ['light', 'moderate', 'heavy'].includes(r.workload) ? r.workload : 'moderate',
+    exposure: ['sun', 'shade', 'indoor'].includes(r.exposure) ? r.exposure : 'sun',
+    shiftStart: String(r.shiftStart || '06:00').slice(0, 5),
+    shiftEnd: String(r.shiftEnd || '17:00').slice(0, 5),
+    crewTag: ['new_to_site', 'returning_after_leave', 'acclimatized'].includes(r.crewTag)
+      ? r.crewTag
+      : 'acclimatized',
+  }));
+  const restCap = Math.max(1, Number(siteRestCapacityCrews) || 2);
+  const firstAiders = Math.max(1, Number(firstAidersOnDuty) || 2);
+
+  const cleanWeather = Array.isArray(hourlyWeather)
+    ? hourlyWeather.slice(0, 18).map((h: any) => ({
+        hourIndex: Number(h.hourIndex),
+        hourLabel: String(h.hourLabel || ''),
+        airTempC: Number(h.airTempC),
+        relativeHumidityPct: Number(h.relativeHumidityPct),
+        windSpeedKmh: Number(h.windSpeedKmh),
+        solarRadiationWm2: Number(h.solarRadiationWm2),
+        wbgtEstimatedC: Number(h.wbgtEstimatedC),
+        heatIndexEstimatedC: Number(h.heatIndexEstimatedC),
+      }))
+    : [];
+
+  if (!aiClient) {
+    return res.json({ source: 'deterministic_no_key', crewBlocks: [] });
+  }
+
+  try {
+    const systemInstruction = `You are an occupational heat-safety schedule planner for UAE outdoor worksites.
+STRICT DATA MINIMIZATION: Work ONLY with anonymized crew_id rows, hourly weather readings, and deterministic UAE compliance limits. Never mention or infer individual worker health.
+UAE RULES:
+- UAE MOHRE Midday Break Rule (15 June – 15 September): outdoor work under direct sun (exposure="sun") is strictly prohibited between 12:30 and 15:00.
+  * For hourIndex=12 (12:00-13:00) on sun crews: max workMinutes=30 (ending 12:30), restMinutes=30.
+  * For hourIndex=13 and hourIndex=14 on sun crews: workMinutes=0, restMinutes=60, restLocation="air_conditioned_rest".
+- Provide shaded_shelter or air_conditioned_rest and 500-1000 ml/hr hydration during elevated estimated WBGT.
+- Suggest shifting heavy open-sun tasks to early morning (06:00-09:00) and apply conservative rest for new_to_site / returning_after_leave crews.
+- Stagger rest breaks outside midday stop so simultaneous resting crews do not exceed site rest-area capacity (${restCap} crews max) and first-aider coverage (${firstAiders} on duty) stays continuous.`;
+
+    const prompt = `Site: ${String(siteName).slice(0, 60)}
+Site Rest-Area Capacity: ${restCap} crews simultaneously · First-Aiders on Duty: ${firstAiders}
+Compliance Rules Summary: ${JSON.stringify(complianceRules).slice(0, 1200)}
+Anonymized Crew Roster: ${JSON.stringify(cleanRoster)}
+Hourly Estimated Thermal Forecast: ${JSON.stringify(cleanWeather)}
+
+Return JSON with:
+- riskDriversExplanation: 2 plain-language sentences summarizing the top thermal risk drivers (air temp, humidity, wind, solar radiation, estimated WBGT).
+- whyThisSchedule: 2 concise sentences explaining why rest cycles and task timings were staggered/placed where they are.
+- suggestedTaskReordering: 2-3 actionable crew-level task reordering bullets (e.g. moving heavy sun work to 06:00-09:00).
+- crewBlocks: array covering each crew's active shift hours (06..19), each object having crew_id, hourIndex (number), exposure ("sun"|"shade"|"indoor"), workMinutes (0-60), restMinutes (0-60, workMinutes+restMinutes=60), restLocation ("none_needed"|"shaded_shelter"|"air_conditioned_rest"|"indoor_cool_zone"), hydrationMlPerHour (500|750|1000), taskNote, suggestedTaskReordering.`;
+
+    const responseText = await generateContentResilient({
+      systemInstruction,
+      contents: prompt,
+      fast: false,
+      timeoutMs: 9000,
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          riskDriversExplanation: { type: Type.STRING },
+          whyThisSchedule: { type: Type.STRING },
+          suggestedTaskReordering: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+          crewBlocks: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                crew_id: { type: Type.STRING },
+                hourIndex: { type: Type.INTEGER },
+                exposure: { type: Type.STRING },
+                workMinutes: { type: Type.INTEGER },
+                restMinutes: { type: Type.INTEGER },
+                restLocation: { type: Type.STRING },
+                hydrationMlPerHour: { type: Type.INTEGER },
+                taskNote: { type: Type.STRING },
+                suggestedTaskReordering: { type: Type.STRING },
+              },
+              required: [
+                'crew_id',
+                'hourIndex',
+                'exposure',
+                'workMinutes',
+                'restMinutes',
+                'restLocation',
+                'hydrationMlPerHour',
+              ],
+            },
+          },
+        },
+        required: [
+          'riskDriversExplanation',
+          'whyThisSchedule',
+          'suggestedTaskReordering',
+          'crewBlocks',
+        ],
+      },
+    });
+
+    if (!responseText) {
+      return res.json({ source: 'deterministic_fallback', crewBlocks: [] });
+    }
+
+    const parsed = JSON.parse(responseText);
+    return res.json({ ...parsed, source: 'gemini' });
+  } catch (err: any) {
+    console.log('Schedule plan Gemini fallback:', err?.message?.slice(0, 120));
+    return res.json({ source: 'deterministic_fallback', crewBlocks: [] });
+  }
+});
+
+// 6. Anonymous Shady Area Registry (Zero PII: stationId, siteId, crew_id, timestamp only)
+interface ServerShadeCheckIn {
+  id: string;
+  stationId: string;
+  stationName: string;
+  siteId: string;
+  crew_id: string;
+  coolingType: 'ac_hall' | 'misting_tent' | 'shaded_canopy';
+  checkedInAtIso: string;
+  method: 'qr_scan' | 'quick_tap';
+}
+
+const SHADE_REGISTRY_MAX = 250;
+let shadeRegistryStore: ServerShadeCheckIn[] = [];
+
+function pruneOldShadeEntries() {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  shadeRegistryStore = shadeRegistryStore.filter((entry) => {
+    const ts = Date.parse(entry.checkedInAtIso);
+    return !Number.isNaN(ts) && ts >= cutoff;
+  });
+}
+
+app.get('/api/shade-registry', (req: Request, res: Response) => {
+  pruneOldShadeEntries();
+  const siteId = typeof req.query.siteId === 'string' ? req.query.siteId.trim() : '';
+  const items = siteId
+    ? shadeRegistryStore.filter((e) => e.siteId === siteId)
+    : shadeRegistryStore;
+  res.json({ entries: items, count: items.length });
+});
+
+app.post('/api/shade-registry', (req: Request, res: Response) => {
+  pruneOldShadeEntries();
+  const body = req.body || {};
+
+  // Strictly whitelist ONLY non-PII station + crew fields
+  const stationId = String(body.stationId || 'SHADE-A1').trim().slice(0, 32);
+  const stationName = String(body.stationName || 'Shaded Rest Station').trim().slice(0, 80);
+  const siteId = String(body.siteId || 'dubai').trim().slice(0, 32);
+  const crew_id = String(body.crew_id || 'Site-Crew').trim().slice(0, 24);
+  const coolingType: ServerShadeCheckIn['coolingType'] =
+    body.coolingType === 'ac_hall' ||
+    body.coolingType === 'misting_tent' ||
+    body.coolingType === 'shaded_canopy'
+      ? body.coolingType
+      : 'shaded_canopy';
+  const method: ServerShadeCheckIn['method'] =
+    body.method === 'qr_scan' ? 'qr_scan' : 'quick_tap';
+
+  const entry: ServerShadeCheckIn = {
+    id: `shade-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    stationId,
+    stationName,
+    siteId,
+    crew_id,
+    coolingType,
+    checkedInAtIso: new Date().toISOString(),
+    method,
+  };
+
+  shadeRegistryStore = [entry, ...shadeRegistryStore].slice(0, SHADE_REGISTRY_MAX);
+  res.status(201).json({ entry, entries: shadeRegistryStore });
+});
+
+app.post('/api/shade-registry/clear', (req: Request, res: Response) => {
+  const stationId = typeof req.body?.stationId === 'string' ? req.body.stationId.trim() : '';
+  if (stationId) {
+    shadeRegistryStore = shadeRegistryStore.filter((e) => e.stationId !== stationId);
+  } else {
+    shadeRegistryStore = [];
+  }
+  res.json({ ok: true, entries: shadeRegistryStore });
+});
+
+// 7. Gemini Crew-Level Acclimatization Guidance Planner (Zero PII)
+app.post('/api/gemini/acclimatization-plan', async (req: Request, res: Response) => {
+  const body = req.body || {};
+  const crew_id = String(body.crew_id || 'Crew-A').slice(0, 24);
+  const status = ['new_to_site', 'returning_after_leave', 'acclimatized'].includes(body.status)
+    ? body.status
+    : 'new_to_site';
+  const currentWbgt = Number(body.wbgtEstimatedC ?? body.currentWbgt) || 30.5;
+  const taskType = String(body.taskType || 'Outdoor construction').slice(0, 64);
+
+  const deterministicPcts =
+    status === 'new_to_site' ? [20, 40, 60, 80, 100] : status === 'returning_after_leave' ? [50, 75, 90, 100] : [100];
+  const fallbackAcclim = {
+    crew_id,
+    status,
+    generatedAtIso: new Date().toISOString(),
+    source: 'deterministic',
+    summary:
+      status === 'acclimatized'
+        ? `${crew_id} is marked acclimatized for ${taskType}. Follow live WBGT work-rest schedules. General guidance, verify with your HSE officer.`
+        : `${crew_id} (${status.replace(/_/g, ' ')}) should follow a gradual ${deterministicPcts.length}-day heat adaptation ramp. General guidance, verify with your HSE officer.`,
+    days: deterministicPcts.map((pct, idx) => ({
+      day: idx + 1,
+      maxExposurePct: pct,
+      recommendedWorkload: pct <= 45 ? 'light' : pct <= 80 ? 'moderate' : 'heavy',
+      workRestNote:
+        pct <= 45
+          ? `Cap hot-zone exposure at ~${pct}% of full shift; prioritize early cool hours with 30m rest/hr.`
+          : pct <= 80
+          ? `Limit hot-zone exposure to ~${pct}% with 15m shaded/AC recovery every hour.`
+          : `Standard site shift cadence (${pct}%) once moderate heat load is tolerated cleanly.`,
+      guidanceNote: 'General guidance, verify with your HSE officer.',
+    })),
+    disclaimer:
+      'General guidance, verify with your HSE officer. Automated environmental guidance only. Not a medical diagnosis or treatment.',
+  };
+
+  if (!aiClient) {
+    return res.json(fallbackAcclim);
+  }
+
+  try {
+    const prompt = `Provide general occupational-hygiene guidance for a multi-day heat acclimatization ramp in UAE summer conditions.
+STRICT RULES:
+- Crew-level guidance ONLY (${crew_id}, task: ${taskType}, tag: ${status}, est. WBGT: ${currentWbgt}°C).
+- Do NOT diagnose medical conditions or recommend clinical treatment.
+- End summary with "General guidance, verify with your HSE officer."
+Return JSON with:
+- summary: 2 short sentences explaining the gradual exposure ramp.
+- days: array of 4 to 5 objects, each with day (number 1..5), maxExposurePct (number 20..100), recommendedWorkload ("light"|"moderate"|"heavy"), workRestNote (string), guidanceNote (string).`;
+
+    const responseText = await generateContentResilient({
+      contents: prompt,
+      fast: true,
+      timeoutMs: 12000,
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          summary: { type: Type.STRING },
+          days: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                day: { type: Type.INTEGER },
+                maxExposurePct: { type: Type.INTEGER },
+                recommendedWorkload: { type: Type.STRING },
+                workRestNote: { type: Type.STRING },
+                guidanceNote: { type: Type.STRING },
+              },
+              required: ['day', 'maxExposurePct', 'recommendedWorkload', 'workRestNote', 'guidanceNote'],
+            },
+          },
+        },
+        required: ['summary', 'days'],
+      },
+    });
+
+    if (!responseText) {
+      return res.json(fallbackAcclim);
+    }
+
+    const parsed = JSON.parse(responseText);
+    return res.json({
+      ...parsed,
+      crew_id,
+      status,
+      generatedAtIso: new Date().toISOString(),
+      source: 'gemini',
+      disclaimer:
+        'General guidance, verify with your HSE officer. Automated environmental guidance only. Not a medical diagnosis or treatment.',
+    });
+  } catch {
+    return res.json(fallbackAcclim);
+  }
+});
+
+// 8. Gemini What-If Simulator Trade-off Explanation (Zero PII)
+app.post('/api/gemini/whatif-tradeoff', async (req: Request, res: Response) => {
+  const b = req.body || {};
+  const fallbackExplanation = `At ${Number(b.airTempC || 42).toFixed(1)}°C ambient and ${Number(b.effectiveWbgtC || 31).toFixed(1)}°C effective est. WBGT during ${String(b.shiftStartHour || 13)}:00, deterministic UAE evaluation is "${String(b.complianceStatus || 'At risk')}". Shifting heavy exertion outside midday peak or increasing shaded rest protects compliance with minimal shift-output loss.`;
+
+  if (!aiClient) {
+    return res.json({ tradeoffExplanation: fallbackExplanation, source: 'deterministic' });
+  }
+
+  try {
+    const prompt = `Summarize the occupational heat-scheduling trade-offs in 2 concise sentences for a UAE site coordinator:
+Simulated inputs: Air Temp ${Number(b.airTempC)}°C, Humidity ${Number(b.humidityPct)}%, Shift Start ${String(b.shiftStartHour)}:00, Workload ${String(b.workload)}, Rest ${Number(b.restMinutesPerHour)} min/hr, Zone ${String(b.zoneType)}, Effective Est. WBGT ${Number(b.effectiveWbgtC)}°C, Deterministic Compliance Verdict: ${String(b.complianceStatus)}.
+Do NOT give medical advice or diagnosis. Focus on productivity vs. heat-risk & UAE compliance trade-off.`;
+
+    const responseText = await generateContentResilient({
+      contents: prompt,
+      fast: true,
+      timeoutMs: 5500,
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          tradeoffExplanation: { type: Type.STRING },
+        },
+        required: ['tradeoffExplanation'],
+      },
+    });
+
+    if (!responseText) {
+      return res.json({ tradeoffExplanation: fallbackExplanation, source: 'deterministic' });
+    }
+    const parsed = JSON.parse(responseText);
+    return res.json({ ...parsed, source: 'gemini' });
+  } catch {
+    return res.json({ tradeoffExplanation: fallbackExplanation, source: 'deterministic' });
+  }
+});
+
+// 9. Anonymous Site-Level Heat Incident & Near-Miss Log (For site learning only, zero PII)
+interface ServerIncidentEntry {
+  id: string;
+  occurredAtIso: string;
+  hourOfDay: number;
+  zoneLabel: string;
+  airTempC: number;
+  wbgtEstimatedC: number;
+  actionTaken: string;
+  notes: string;
+}
+
+let anonymousIncidentsStore: ServerIncidentEntry[] = [];
+
+app.get('/api/incidents', (_req: Request, res: Response) => {
+  res.json({ entries: anonymousIncidentsStore });
+});
+
+app.post('/api/incidents', (req: Request, res: Response) => {
+  const b = req.body || {};
+  const hourOfDay = Math.max(0, Math.min(23, Number(b.hourOfDay) || new Date().getHours()));
+  const entry: ServerIncidentEntry = {
+    id: `inc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    occurredAtIso: String(b.occurredAtIso || new Date().toISOString()).slice(0, 40),
+    hourOfDay,
+    zoneLabel: String(b.zoneLabel || 'Zone A').trim().slice(0, 48),
+    airTempC: Number(b.airTempC) || 40.0,
+    wbgtEstimatedC: Number(b.wbgtEstimatedC) || 30.0,
+    actionTaken: String(b.actionTaken || 'Crew moved to shaded cool-down station').trim().slice(0, 140),
+    notes: String(b.notes || 'Anonymous environmental learning note').trim().slice(0, 200),
+  };
+  anonymousIncidentsStore = [entry, ...anonymousIncidentsStore].slice(0, 150);
+  res.status(201).json({ entry, entries: anonymousIncidentsStore });
 });
 
 // Health check endpoint
